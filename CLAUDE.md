@@ -70,7 +70,7 @@ C++ (Game logic) → Emscripten → src/wasm/main.js + main.wasm
 - `gl/shaders/` — two shader pairs: `tex.vert/frag.glsl` (sprite/platform rendering with spritesheet UV math) and `background.vert/frag.glsl` (parallax scrolling background quad).
 - `audio/AudioManager.ts` — wraps Web Audio API; music starts on first keypress (browser autoplay policy); SFX names (`jump`, `land`) are fired by a JS callback registered with `Game::setSoundCallback`.
 - `components/GameCanvas.tsx` — mounts the canvas, owns the `requestAnimationFrame` loop, wires input/output between WASM and renderer, manages volume state and level-complete overlay.
-- `components/App.tsx` / `src/App.tsx` — top-level React shell (minimal).
+- `components/App.tsx` — top-level React shell (minimal). (The old duplicate `src/App.tsx` mentioned in earlier versions of this doc was removed — `src/main.tsx` only ever imported `./components/App`.)
 
 ### Level format (`public/levels/*.json`)
 ```json
@@ -92,3 +92,10 @@ World units are used throughout (not pixels). The viewport shows 10 world-units 
 - `wazzy_spritesheet.png` — 64×64 px frames, rows: 0=idle (2 frames), 1=run (4 frames), 2=jump (1 frame).
 - `platform.png`, `background.png` — textures tiled/scrolled by the two shader programs.
 - `background-music.mp3`, `jump.mp3`, `land.mp3` — audio assets loaded at init.
+- `basic.vert/frag.glsl` shader pair in `src/gl/shaders/` is unused dead weight (nothing imports it). `wazzy.png` is *not* dead — `public/levels/demo-decor.json` references it via the `decor` array (see Known Issues below).
+
+## Known Issues / Blockers (2026-09-07)
+
+- **No CI.** `.github/` has no `workflows/` directory — lint, typecheck, and tests (`npm run lint` / `test` / `test:e2e`) only run locally. Nothing catches a broken build or a `Game.cpp` compile error before it lands on `main`. `docs/plans/PLAN.md` calls this out as an open roadmap item (§5–6), not yet started.
+- **This file had drifted.** As of this audit it hadn't been updated in ~78 days despite ongoing commits, and `AGENTS.md`'s "Known Issues" list had three already-fixed items still listed as open (a `Game.cpp` compile error, a duplicate `App.tsx`, a hardcoded SFTP credential in `deploy.py` — all fixed). Fixed here and in `AGENTS.md`; worth rechecking both periodically against the actual code.
+- **`decor` / `backgroundLayers` level fields aren't documented above.** `public/levels/demo-decor.json` (listed in `public/levels/manifest.json`, selectable in the level dropdown) uses `"decor"` and `"backgroundLayers"` arrays, fully handled client-side by `extractDecorConfigs` / `extractBackgroundLayerConfigs` in `src/components/GameCanvas.tsx` and drawn by `drawBackgroundLayer` in `src/gl/renderer.ts` — but the "Level format" section above only documents `spawn`/`bounds`/`platforms`/`goals`/`camera`. These fields never reach `Game::loadLevel` in C++; they're TS-only. `docs/plans/PLAN.md` §1 lists documenting this schema as a not-started roadmap item.

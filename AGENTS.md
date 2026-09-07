@@ -187,11 +187,17 @@ Sound events are triggered from C++ via `setSoundCallback` → JS callback. Supp
 
 ## Known Issues & Quirks
 
-1. **`cpp/src/Game.cpp` has a stray block after the constructor.** Lines 95–107 contain `platforms.push_back` calls outside any function body (after the closing `}` of the constructor). This will cause a C++ compilation error and must be fixed or removed before `npm run build:wasm` succeeds.
-2. **Duplicate `App.tsx`.** Both `src/App.tsx` and `src/components/App.tsx` exist. `src/main.tsx` imports from `./components/App`, so `src/App.tsx` is dead code.
-3. **Legacy global WASM loader.** `custom.d.ts` and `loader.ts` still reference `window.createGameModule` and a dynamic `game.js` script injection. The current Vite build imports the module directly, so the fallback path is rarely used.
-4. **Hardcoded credentials in `deploy.py`.** The SFTP password is stored in plaintext. This is a security risk.
-5. **Tests now exist.** `npm run test` runs Vitest unit tests and `npm run test:e2e` runs the Playwright smoke check. The smoke test stubs the WASM module so it can run without an Emscripten build.
+1. **Legacy global WASM loader.** `custom.d.ts` and `loader.ts` still reference `window.createGameModule` and a dynamic `game.js` script injection. The current Vite build imports the module directly, so the fallback path is rarely used.
+2. **Tests now exist.** `npm run test` runs Vitest unit tests and `npm run test:e2e` runs the Playwright smoke check. The smoke test stubs the WASM module so it can run without an Emscripten build.
+3. **`basic.vert.glsl` / `basic.frag.glsl` are dead.** Nothing in `src/` imports this shader pair. Safe to delete, or wire up if it's meant to be used. (`public/wazzy.png`, previously listed here too, is no longer dead — see below.)
+
+> As of 2026-09-07: the previous #1 (`Game.cpp` stray block causing a compile error), #2 (duplicate `src/App.tsx`), and the hardcoded SFTP credential in `deploy.py` (see Security Considerations below) have all been fixed — `loadLevel`'s platform-parsing block is inside the function, `src/App.tsx` no longer exists, and `deploy.py` now reads "No SFTP passwords are stored in this repo." Removed those stale entries so an agent doesn't waste a cycle "fixing" something that's already fixed.
+
+## Known Issues / Blockers (2026-09-07)
+
+- **No CI.** `.github/` only has `copilot-instructions.md` — there's no `.github/workflows/` at all. `npm run lint`, `tsc`, and the test suites only run locally; nothing blocks a broken build, a failing lint, or a `Game.cpp` compile break from landing on `main`. `docs/plans/PLAN.md` §5–6 explicitly calls for "CI wiring for lint + type-check + build" as a roadmap item — it hasn't been started.
+- **Doc drift generally.** This file and `CLAUDE.md` hadn't been touched in ~78 days relative to the last code commit as of this audit, and the "Known Issues" list above had gone stale (three of its five items were already-fixed non-issues). Worth a periodic recheck of this file against the actual code rather than assuming it's current.
+- **`decor` / `backgroundLayers` level fields are undocumented here.** `public/levels/demo-decor.json` (wired into `public/levels/manifest.json` as a selectable level) uses `"decor"` and `"backgroundLayers"` arrays that are fully parsed and rendered client-side (`extractDecorConfigs` / `extractBackgroundLayerConfigs` in `src/components/GameCanvas.tsx`, drawn via `drawBackgroundLayer` in `src/gl/renderer.ts`) — but neither field is mentioned in the "Level Format" section above or in `CLAUDE.md`'s level-format block, and neither is parsed by `Game::loadLevel` in `cpp/src/Game.cpp` (they're TS/renderer-only, never reach C++). `docs/plans/PLAN.md` §1 still lists "expand level schema documentation (camera, backgroundLayers, decor, manifest)" as a not-yet-started roadmap item, which matches. `public/wazzy.png` is referenced from `demo-decor.json`'s `decor` array, so it is no longer a genuinely dead asset (it's just not rendered by anything other than this one demo level).
 
 ## Deployment
 
@@ -207,6 +213,6 @@ python deploy.py
 
 ## Security Considerations
 
-- `deploy.py` contains a hardcoded SFTP password. Rotate it if the repository is ever shared.
+- `deploy.py` no longer contains a hardcoded SFTP password (fixed since this doc was last written — it now reads credentials elsewhere). Double check before assuming, since this was previously a real leak.
 - The game runs entirely client-side; there is no server-side auth or data persistence.
-- `eslint` is configured but does not run automatically on build.
+- `eslint` is configured but does not run automatically on build or in CI — see "Known Issues / Blockers" above.
