@@ -14,6 +14,7 @@ import {
   type AuthoringOverlay,
   type AuthoringState,
 } from '../lib/authoring';
+import { formatCullStats } from '../lib/culling';
 import { reportLevelIssues, summarizeLevelIssues, validateLevel, type LevelIssueSummary } from '../lib/levelValidator';
 
 import vertexShaderSource from '../gl/shaders/tex.vert.glsl?raw';
@@ -307,6 +308,10 @@ const GameCanvas = () => {
   const copyNoteTimerRef = useRef<number | undefined>(undefined);
   const [authoring, setAuthoring] = useState<AuthoringState>(INITIAL_AUTHORING_STATE);
   const [authoringInfo, setAuthoringInfo] = useState('');
+  // K: cull debug (outlines the shrunken visible rect and shows drawn/total counters). Render-only.
+  const cullDebugRef = useRef(false);
+  const [cullDebug, setCullDebug] = useState(false);
+  const [cullInfo, setCullInfo] = useState('');
   const [copyNote, setCopyNote] = useState('');
   const [volume, setVolume] = useState(0.5);
   const [levelComplete, setLevelComplete] = useState(false);
@@ -379,6 +384,10 @@ const GameCanvas = () => {
             }
             console.info('[authoring] platform snippet:', snippet);
           }
+        }
+        if (e.code === 'KeyK') {
+          cullDebugRef.current = !cullDebugRef.current;
+          setCullDebug(cullDebugRef.current);
         }
         if (next) {
           authoringRef.current = next;
@@ -704,8 +713,10 @@ const GameCanvas = () => {
             playerAnim,
             jsGoals,
             charForRenderer,
-            overlay
+            overlay,
+            cullDebugRef.current
           );
+          if (cullDebugRef.current) setCullInfo(formatCullStats(renderer.getCullStats()));
           animationFrameId = requestAnimationFrame(gameLoop);
         };
         animationFrameId = requestAnimationFrame(gameLoop);
@@ -786,7 +797,7 @@ const GameCanvas = () => {
           onChange={handleVolumeChange}
         />
         <div style={{ fontSize: '11px', opacity: 0.7, fontFamily: 'monospace', color: '#0ff' }}>
-          1-9: switch map • R: reload map • C: switch dog • E: ability<br />G: grid (Shift+G: spacing) • H: authoring mode (P: copy platform)
+          1-9: switch map • R: reload map • C: switch dog • E: ability<br />G: grid (Shift+G: spacing) • H: authoring mode (P: copy platform) • K: cull debug
         </div>
       </div>
       <div style={{ position: 'absolute', left: '10px', top: '10px', zIndex: 30, color: '#0ff', background: 'rgba(0,0,0,0.6)', padding: '6px', fontFamily: 'monospace', fontSize: '12px', borderRadius: '4px', maxWidth: '45%' }}>
@@ -799,6 +810,17 @@ const GameCanvas = () => {
         )}
         <div style={{ marginTop: 4 }}>{debugInfo}</div>
       </div>
+      {cullDebug && (
+        <div
+          data-testid="cull-hud"
+          style={{
+            position: 'absolute', right: '10px', bottom: '44px', zIndex: 30, color: '#f80', background: 'rgba(0,0,0,0.75)',
+            padding: '6px 8px', fontFamily: 'monospace', fontSize: '12px', borderRadius: '4px', whiteSpace: 'pre', pointerEvents: 'none',
+          }}
+        >
+          {cullInfo}
+        </div>
+      )}
       {authoring.hud && (
         <div
           data-testid="authoring-hud"

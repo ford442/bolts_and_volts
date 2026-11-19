@@ -73,7 +73,7 @@ C++ (Game logic) → Emscripten → src/wasm/main.js + main.wasm
 - `components/App.tsx` — top-level React shell (minimal). (The old duplicate `src/App.tsx` mentioned in earlier versions of this doc was removed — `src/main.tsx` only ever imported `./components/App`.)
 
 ### Level-authoring hotkeys
-`G` grid, `Shift+G` grid spacing (1 / 0.5 / 0.25), `H` authoring mode (HUD with mouse→world coords, strong platform outlines, dimmed player/particles, snap marker), `P` copy a platform JSON snippet at the snapped cursor (authoring mode only). State lives in `GameCanvas.tsx` refs; coordinate math in `src/lib/authoring.ts`; drawing in `Renderer.drawAuthoringOverlay`. Existing keys: `R` reload, `C` character, `E` ability, `1-9` level switch.
+`G` grid, `Shift+G` grid spacing (1 / 0.5 / 0.25), `H` authoring mode (HUD with mouse→world coords, strong platform outlines, dimmed player/particles, snap marker), `P` copy a platform JSON snippet at the snapped cursor (authoring mode only). State lives in `GameCanvas.tsx` refs; coordinate math in `src/lib/authoring.ts`; drawing in `Renderer.drawAuthoringOverlay`. `K` cull debug (visible-rect culling is render-only; `src/lib/culling.ts`, shrunken rect + drawn/total counters). Existing keys: `R` reload, `C` character, `E` ability, `1-9` level switch.
 
 ### Level format (`public/levels/*.json`)
 Full schema: [`docs/architecture/level-format.md`](./docs/architecture/level-format.md)
