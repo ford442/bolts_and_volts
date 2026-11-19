@@ -3,6 +3,7 @@ import { Renderer, type BackgroundLayer, type DecorLayers, type DecorItem, type 
 import { loadWasmModule, type Game, type InputState, type Platform, type Particle } from '../wasm/loader';
 import { AudioManager } from '../audio/AudioManager';
 import { DEFAULT_LEVELS, normalizeLevelManifest, resolveLevelEntry, type LevelManifestEntry } from '../lib/levelManifest';
+import { reportLevelIssues, summarizeLevelIssues, validateLevel, type LevelIssueSummary } from '../lib/levelValidator';
 
 import vertexShaderSource from '../gl/shaders/tex.vert.glsl?raw';
 import fragmentShaderSource from '../gl/shaders/tex.frag.glsl?raw';
@@ -243,6 +244,7 @@ const GameCanvas = () => {
   const [currentCharacter, setCurrentCharacter] = useState<'BOLTS' | 'VOLTS'>('BOLTS');
   const [availableLevels, setAvailableLevels] = useState<LevelManifestEntry[]>(DEFAULT_LEVELS);
   const [currentLevelId, setCurrentLevelId] = useState<string>(DEFAULT_LEVELS[0].id);
+  const [levelIssues, setLevelIssues] = useState<LevelIssueSummary | null>(null);
   const [currentLevelMetadata, setCurrentLevelMetadata] = useState<LevelMetadata>({
     id: DEFAULT_LEVELS[0].id,
     name: DEFAULT_LEVELS[0].name ?? DEFAULT_LEVELS[0].id,
@@ -384,7 +386,7 @@ const GameCanvas = () => {
                   frameSize,
                 };
               } catch (error) {
-                console.warn(`Failed to load decor texture "${config.image}"`, error);
+                console.warn(`[level ${currentLevelIdRef.current}] Failed to load decor texture "${config.image}"`, error);
                 return null;
               }
             })
@@ -428,10 +430,20 @@ const GameCanvas = () => {
           const levelUrl = cacheBust
             ? `/levels/${targetLevel.file}?ts=${Date.now()}`
             : `/levels/${targetLevel.file}`;
+          const levelLabel = `${targetLevel.id} (${targetLevel.file})`;
+          const reportLoadFailure = (message: string, detail?: unknown): void => {
+            const full = `[level ${levelLabel}] ${message}`;
+            if (detail === undefined) console.error(full); else console.error(full, detail);
+            setLevelIssues({ errors: 1, warnings: 0, first: full });
+          };
           try {
             const levelResp = await fetch(levelUrl);
             if (levelResp.ok) {
               const levelObj: unknown = await levelResp.json();
+              // Validation only reports; the lenient normalizer below still decides what loads.
+              const issues = validateLevel(levelObj);
+              reportLevelIssues(levelLabel, issues);
+              setLevelIssues(issues.length > 0 ? summarizeLevelIssues(levelLabel, issues) : null);
               const normalized = normalizeLevelData(levelObj);
               gameInstance.loadLevel(normalized.coreLevel);
               backgroundLayers = await loadBackgroundLayers(normalized.backgroundLayers);
@@ -450,7 +462,7 @@ const GameCanvas = () => {
                 author: resolvedAuthor,
               });
             } else {
-              console.warn('Failed to fetch level JSON:', levelResp.status);
+              reportLoadFailure(`Failed to fetch ${levelUrl}: HTTP ${levelResp.status}. Loading default background and no level data.`);
               backgroundLayers = await loadBackgroundLayers([DEFAULT_BACKGROUND_LAYER]);
               decorLayers = EMPTY_DECOR_LAYERS;
               platformVisualFlags = [];
@@ -462,7 +474,7 @@ const GameCanvas = () => {
               });
             }
           } catch (err) {
-            console.warn('Error loading level JSON:', err);
+            reportLoadFailure('Error loading level (invalid JSON syntax, or a background texture failed to load). Falling back to the default background.', err);
             backgroundLayers = await loadBackgroundLayers([DEFAULT_BACKGROUND_LAYER]);
             decorLayers = EMPTY_DECOR_LAYERS;
             platformVisualFlags = [];
@@ -626,6 +638,21 @@ const GameCanvas = () => {
         )}
         <div style={{ marginTop: 4 }}>{debugInfo}</div>
       </div>
+      {import.meta.env.DEV && levelIssues && (
+        <div
+          role="status"
+          style={{
+            position: 'absolute', left: '50%', top: '10px', transform: 'translateX(-50%)', zIndex: 31,
+            maxWidth: '40%', color: '#fff', background: levelIssues.errors > 0 ? 'rgba(160,20,20,0.9)' : 'rgba(150,100,0,0.9)',
+            padding: '6px 10px', fontFamily: 'monospace', fontSize: '11px', borderRadius: '4px', pointerEvents: 'none',
+          }}
+        >
+          <div style={{ fontWeight: 700 }}>
+            Level loaded with {levelIssues.errors} error{levelIssues.errors === 1 ? '' : 's'}, {levelIssues.warnings} warning{levelIssues.warnings === 1 ? '' : 's'} — see console
+          </div>
+          {levelIssues.first && <div style={{ opacity: 0.9, marginTop: 2, wordBreak: 'break-word' }}>{levelIssues.first}</div>}
+        </div>
+      )}
       <div style={{ position: 'absolute', left: '10px', bottom: '10px', zIndex: 30, color: '#0ff', background: 'rgba(0,0,0,0.6)', padding: '6px', fontFamily: 'monospace', fontSize: '11px', borderRadius: '4px' }}>
         level: {currentLevelMetadata.id} ({currentLevelId})
       </div>

@@ -1,0 +1,202 @@
+import { readFileSync } from 'node:fs';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  formatLevelIssue,
+  reportLevelIssues,
+  summarizeLevelIssues,
+  validateLevel,
+} from '../../src/lib/levelValidator';
+
+const validLevel = () => ({
+  spawn: { x: 0, y: -1 },
+  bounds: { min: { x: -10, y: -10 }, max: { x: 20, y: 10 } },
+  platforms: [{ position: { x: 0, y: -3 }, size: { x: 10, y: 0.4 } }],
+  goals: [{ position: { x: 5, y: -2 }, size: { x: 1, y: 1 } }],
+});
+
+const paths = (level: unknown) => validateLevel(level).map((i) => `${i.severity}:${i.path}`);
+
+describe('validateLevel — shipped levels', () => {
+  for (const name of ['test-1', 'demo-decor']) {
+    it(`${name}.json has no issues`, () => {
+      const json = JSON.parse(readFileSync(`public/levels/${name}.json`, 'utf8'));
+      expect(validateLevel(json)).toEqual([]);
+    });
+  }
+});
+
+describe('validateLevel — silence', () => {
+  it('is silent for a minimal level without camera, decor or backgroundLayers', () => {
+    expect(validateLevel(validLevel())).toEqual([]);
+  });
+});
+
+describe('validateLevel — shape', () => {
+  it('errors when the root is not an object', () => {
+    expect(paths(null)).toEqual(['error:']);
+    expect(paths([])).toEqual(['error:']);
+  });
+
+  it('errors when platforms is missing or empty', () => {
+    const { platforms: _omit, ...noPlatforms } = validLevel();
+    expect(paths(noPlatforms)).toEqual(['error:platforms']);
+    expect(paths({ ...validLevel(), platforms: [] })).toEqual(['error:platforms']);
+  });
+
+  it('warns about missing spawn and goals', () => {
+    const { spawn: _s, goals: _g, ...rest } = validLevel();
+    expect(paths(rest).sort()).toEqual(['warning:goals', 'warning:spawn']);
+  });
+
+  it('suggests the right key for a top-level typo', () => {
+    const issues = validateLevel({ ...validLevel(), platfroms: [] });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ severity: 'warning', path: 'platfroms' });
+    expect(issues[0].effect).toContain('"platforms"');
+  });
+});
+
+describe('validateLevel — platforms and goals', () => {
+  it('reports the exact bad axis with expected vs found', () => {
+    const level = validLevel();
+    level.platforms.push({ position: { x: 1, y: 1 }, size: { x: 2, y: 'tall' as unknown as number } });
+    const issues = validateLevel(level);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({
+      severity: 'error',
+      path: 'platforms[1].size.y',
+      expected: 'finite number',
+      found: 'string "tall"',
+    });
+  });
+
+  it('reports a missing position and a typo\'d key', () => {
+    const level = { ...validLevel(), platforms: [{ positon: { x: 0, y: 0 }, size: { x: 1, y: 1 } }] };
+    expect(paths(level).sort()).toEqual(['error:platforms[0].position', 'warning:platforms[0].positon']);
+  });
+
+  it('reports a missing size.x as "missing"', () => {
+    const level = { ...validLevel(), goals: [{ position: { x: 1, y: 1 }, size: { y: 1 } }] };
+    const [issue] = validateLevel(level);
+    expect(issue).toMatchObject({ path: 'goals[0].size.x', found: 'missing' });
+  });
+
+  it('flags non-array goals and non-object entries', () => {
+    expect(paths({ ...validLevel(), goals: {} })).toEqual(['error:goals']);
+    expect(paths({ ...validLevel(), platforms: [42] })).toEqual(['error:platforms[0]']);
+  });
+
+  it('allows the documented `label` and `visual` keys', () => {
+    const level = { ...validLevel(), platforms: [{ position: { x: 0, y: 0 }, size: { x: 1, y: 1 }, label: 'a', visual: false }] };
+    expect(validateLevel(level)).toEqual([]);
+  });
+});
+
+describe('validateLevel — backgroundLayers', () => {
+  it('requires an image path', () => {
+    const level = { ...validLevel(), backgroundLayers: [{ scrollFactorX: 0.1 }, { image: '  ' }] };
+    expect(paths(level)).toEqual(['error:backgroundLayers[0].image', 'error:backgroundLayers[1].image']);
+  });
+
+  it('warns on bad numeric fields and non-positive scale', () => {
+    const level = {
+      ...validLevel(),
+      backgroundLayers: [{ image: './a.png', scrollFactorX: 'fast', scale: 0 }],
+    };
+    expect(paths(level)).toEqual(['warning:backgroundLayers[0].scrollFactorX', 'warning:backgroundLayers[0].scale']);
+  });
+
+  it('warns on suspicious image paths', () => {
+    const level = { ...validLevel(), backgroundLayers: [{ image: 'public/a.png' }, { image: '.\\a.png' }] };
+    expect(paths(level)).toEqual(['warning:backgroundLayers[0].image', 'warning:backgroundLayers[1].image']);
+  });
+
+  it('warns when vertical parallax has no followY to act on', () => {
+    const level = { ...validLevel(), backgroundLayers: [{ image: './a.png', scrollFactorY: 0.1 }] };
+    expect(paths(level)).toEqual(['warning:backgroundLayers[0].scrollFactorY']);
+    const withCamera = { ...level, camera: { followY: true } };
+    expect(validateLevel(withCamera)).toEqual([]);
+  });
+});
+
+describe('validateLevel — decor', () => {
+  const decor = (entry: Record<string, unknown>) => ({ ...validLevel(), decor: [entry] });
+
+  it('accepts image or texture', () => {
+    expect(validateLevel(decor({ image: './a.png', position: { x: 0, y: 0 } }))).toEqual([]);
+    expect(validateLevel(decor({ texture: './a.png', position: { x: 0, y: 0 } }))).toEqual([]);
+  });
+
+  it('errors when neither image nor texture is set, and on bad position', () => {
+    expect(paths(decor({ position: { x: 0, y: 0 } }))).toEqual(['error:decor[0].image']);
+    expect(paths(decor({ image: './a.png', position: { x: 'a', y: 0 } }))).toEqual(['error:decor[0].position.x']);
+  });
+
+  it('warns on unknown layer, bad uv, bad size', () => {
+    const level = decor({
+      image: './a.png',
+      position: { x: 0, y: 0 },
+      layer: 'middle',
+      uv: [0, 0, 0, 64],
+      size: { x: 1 },
+    });
+    expect(paths(level).sort()).toEqual(['warning:decor[0].layer', 'warning:decor[0].size.y', 'warning:decor[0].uv']);
+  });
+
+  it('accepts layer aliases and a valid uv', () => {
+    const level = decor({ image: './a.png', position: { x: 0, y: 0 }, layer: 'far', uv: [0, 0, 64, 64], parallax: 0.5 });
+    expect(validateLevel(level)).toEqual([]);
+  });
+});
+
+describe('validateLevel — camera and bounds consistency', () => {
+  it('errors on inverted bounds', () => {
+    const level = { ...validLevel(), bounds: { min: { x: 5, y: 0 }, max: { x: 0, y: 10 } }, spawn: { x: 2, y: 1 } };
+    expect(paths(level).filter((p) => p === 'error:bounds')).toHaveLength(1);
+  });
+
+  it('errors when only one of bounds.min / bounds.max is valid', () => {
+    const level = { ...validLevel(), bounds: { min: { x: 0, y: 0 } } };
+    expect(paths(level)).toContain('error:bounds.max');
+  });
+
+  it('warns when spawn or goal sit outside bounds', () => {
+    const level = { ...validLevel(), spawn: { x: 100, y: 0 }, goals: [{ position: { x: 0, y: 50 }, size: { x: 1, y: 1 } }] };
+    expect(paths(level).sort()).toEqual(['warning:goals[0].position', 'warning:spawn']);
+  });
+
+  it('warns about wrong-typed and ineffective camera settings', () => {
+    expect(paths({ ...validLevel(), camera: { followY: 'yes' } })).toEqual(['warning:camera.followY']);
+    expect(paths({ ...validLevel(), camera: { lookAheadY: 1 } })).toEqual(['warning:camera']);
+    expect(validateLevel({ ...validLevel(), camera: { followY: true, verticalDeadzone: 0.5, lookAheadY: 1 } })).toEqual([]);
+  });
+});
+
+describe('reporting', () => {
+  it('formats with level label, path, expected and found', () => {
+    const [issue] = validateLevel({ ...validLevel(), platforms: [{ position: { x: 0, y: 0 }, size: { x: 1, y: null } }] });
+    expect(formatLevelIssue('t (t.json)', issue)).toBe(
+      '[level t (t.json)] platforms[0].size.y: expected finite number, found null — entry skipped',
+    );
+  });
+
+  it('routes errors to console.error and warnings to console.warn, nothing when clean', () => {
+    const sink = { warn: vi.fn(), error: vi.fn() };
+    reportLevelIssues('x', validateLevel(validLevel()), sink);
+    expect(sink.warn).not.toHaveBeenCalled();
+    expect(sink.error).not.toHaveBeenCalled();
+
+    const { platforms: _p, ...noPlatforms } = validLevel();
+    reportLevelIssues('x', validateLevel({ ...noPlatforms, extra: 1 }), sink);
+    expect(sink.error).toHaveBeenCalledTimes(1);
+    expect(sink.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('summarizes counts and prefers an error as the headline', () => {
+    const { platforms: _p, ...noPlatforms } = validLevel();
+    const summary = summarizeLevelIssues('x', validateLevel({ ...noPlatforms, extra: 1 }));
+    expect(summary.errors).toBe(1);
+    expect(summary.warnings).toBe(1);
+    expect(summary.first).toContain('platforms');
+  });
+});
