@@ -202,9 +202,36 @@ Condensed from `public/levels/demo-decor.json` (see that file for the full level
 
 `public/levels/test-1.json` is the reference for a pure-collision level: it uses only `name`, `description`, `spawn`, `bounds`, `platforms` (with `label`) and `goals`.
 
+## Asset folder convention
+
+Image paths in level JSON are URLs resolved **relative to `public/`** (not relative to the level file), written with a leading `./`. Both `background.png` and `levels/demo-pano/pano.png` therefore work with no code changes.
+
+```text
+public/
+  background.png, platform.png, wazzy*.png   # shared/global art
+  levels/
+    manifest.json
+    test-1.json
+    demo-decor.json
+    demo-pano.json
+    demo-pano/                # level-specific art, named after the level id
+      pano.png
+    voltage-valley/           # e.g. future maps
+      bg-pano.png
+      bg-mountains.png
+      props/...
+```
+
+Rules of thumb:
+- Art used by a single level lives in `public/levels/<level-id>/`; art used by several levels stays at the `public/` root.
+- Reference it as `./levels/<level-id>/<file>.png` (e.g. `"image": "./levels/demo-pano/pano.png"`).
+- Keep the level JSON itself directly in `public/levels/` (`manifest.json` `file` entries are relative to that folder). Moving a level into its own folder (`<id>/level.json`) is a possible future step and is not supported by the manifest today.
+- Existing root-level paths keep working; migrate a level only by moving its files and updating its paths together.
+- The reference example is `demo-pano`: its panorama is `./levels/demo-pano/pano.png`.
+
 ## Authoring checklist for a new map
 
-1. Put images in `public/` and reference them as `./file.png`.
+1. Put shared art in `public/` (`./file.png`) and level-specific art in `public/levels/<level-id>/` (see [Asset folder convention](#asset-folder-convention)).
 2. Set `bounds` a bit wider than your platforms so the camera clamps sensibly.
 3. For tall levels, enable `camera.followY` and give background layers a small non-zero `scrollFactorY`.
 4. Add the file to `manifest.json`, run `npm run dev`, and pick it from the level dropdown (`R` reloads the level).
