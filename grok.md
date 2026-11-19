@@ -71,7 +71,7 @@ TS/React (src/)
 │   ├── platform.png, background.png
 │   ├── *.mp3 (background-music, jump, land)
 │   └── shaders/ (older copies, not used by current renderer)
-├── package.json (scripts: dev/build:wasm/build/preview + emcc flags)
+├── package.json (scripts: dev/build:wasm/build:wasm:debug/build/preview; emcc flags in cpp/emscripten-*.response)
 ├── deploy.py (⚠️ hardcoded password)
 ├── CLAUDE.md (authoritative architecture doc)
 └── vite.config.ts

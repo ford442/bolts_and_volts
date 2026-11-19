@@ -26,7 +26,7 @@ npm install
 npm run dev
 
 # Build WASM only
-npm run build:wasm
+npm run build:wasm        # release (-O3); `npm run dev` uses build:wasm:debug
 
 # Full production build
 npm run build
@@ -101,6 +101,6 @@ World units are used throughout (not pixels). The viewport shows 10 world-units 
 
 ## Known Issues / Blockers (2026-09-07)
 
-- **No CI.** `.github/` has no `workflows/` directory — lint, typecheck, and tests (`npm run lint` / `test` / `test:e2e`) only run locally. Nothing catches a broken build or a `Game.cpp` compile error before it lands on `main`. `docs/plans/PLAN.md` calls this out as an open roadmap item (§5–6), not yet started.
+- **CI added (2026-11-19).** `.github/workflows/ci.yml` runs release WASM build, lint, `tsc -b`, unit and e2e tests on push/PR to `main` (emsdk pinned to 3.1.61). Not yet confirmed green on GitHub — check the first PR run. emcc flags live in `cpp/emscripten-*.response` (see `cpp/README.md`).
 - **This file had drifted.** As of this audit it hadn't been updated in ~78 days despite ongoing commits, and `AGENTS.md`'s "Known Issues" list had three already-fixed items still listed as open (a `Game.cpp` compile error, a duplicate `App.tsx`, a hardcoded SFTP credential in `deploy.py` — all fixed). Fixed here and in `AGENTS.md`; worth rechecking both periodically against the actual code.
 - **`decor` / `backgroundLayers` level fields aren't documented above.** `public/levels/demo-decor.json` (listed in `public/levels/manifest.json`, selectable in the level dropdown) uses `"decor"` and `"backgroundLayers"` arrays, fully handled client-side by `extractDecorConfigs` / `extractBackgroundLayerConfigs` in `src/components/GameCanvas.tsx` and drawn by `drawBackgroundLayer` in `src/gl/renderer.ts` — but the "Level format" section above only documents `spawn`/`bounds`/`platforms`/`goals`/`camera`. These fields never reach `Game::loadLevel` in C++; they're TS-only. `docs/plans/PLAN.md` §1 lists documenting this schema as a not-started roadmap item.
