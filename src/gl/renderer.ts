@@ -1,4 +1,8 @@
 import type { Vec2, Platform, AnimationState, Particle } from '../wasm/loader';
+import { gridLineIndices, type AuthoringOverlay } from '../lib/authoring';
+
+/** Opacity applied to the player and particles while level-authoring mode is on. */
+const AUTHORING_DIM_ALPHA = 0.3;
 
 export type TextureObject = {
   texture: WebGLTexture;
@@ -79,6 +83,7 @@ export class Renderer {
   private spriteSheetSizeUniformLocation: WebGLUniformLocation | null;
   private spriteFrameCoordUniformLocation: WebGLUniformLocation | null;
   private spriteFlipHorizontalUniformLocation: WebGLUniformLocation | null;
+  private spriteAlphaUniformLocation: WebGLUniformLocation | null;
   private spriteProjectionMatrixUniformLocation: WebGLUniformLocation | null;
   private backgroundProgram: WebGLProgram;
   private backgroundPositionAttributeLocation: number;
@@ -98,6 +103,15 @@ export class Renderer {
   private debugGreenTexture: TextureObject | null = null;
   private whiteTexture: TextureObject | null = null;
   private debugCyanTexture: TextureObject | null = null; // used for goal visualization (playability win)
+  // Level-authoring overlay colours (grid, platform outlines, snap marker).
+  private authoringTextures: {
+    gridMinor: TextureObject;
+    gridMajor: TextureObject;
+    gridAxis: TextureObject;
+    outline: TextureObject;
+    halo: TextureObject;
+    snap: TextureObject;
+  } | null = null;
 
 
   constructor(canvas: HTMLCanvasElement, spriteVsSource: string, spriteFsSource: string, bgVsSource: string, bgFsSource: string) {
@@ -118,6 +132,7 @@ export class Renderer {
     this.spriteFrameCoordUniformLocation = this.gl.getUniformLocation(this.spriteProgram, 'u_sprite_frame_coord');
     this.spriteFlipHorizontalUniformLocation = this.gl.getUniformLocation(this.spriteProgram, 'u_flip_horizontal');
     this.spriteProjectionMatrixUniformLocation = this.gl.getUniformLocation(this.spriteProgram, 'u_projection');
+    this.spriteAlphaUniformLocation = this.gl.getUniformLocation(this.spriteProgram, 'u_alpha');
     const bgVertexShader = this.compileShader(this.gl.VERTEX_SHADER, bgVsSource);
     const bgFragmentShader = this.compileShader(this.gl.FRAGMENT_SHADER, bgFsSource);
     this.backgroundProgram = this.createProgram(bgVertexShader, bgFragmentShader);
@@ -136,6 +151,17 @@ export class Renderer {
     this.debugGreenTexture = this.createSolidTexture([0, 255, 0, 128]);
     this.whiteTexture = this.createSolidTexture([255, 255, 255, 255]);
     this.debugCyanTexture = this.createSolidTexture([0, 255, 255, 170]); // cyan goals (visible target)
+    this.authoringTextures = {
+      gridMinor: this.createSolidTexture([255, 255, 255, 70]),
+      gridMajor: this.createSolidTexture([255, 255, 255, 150]),
+      gridAxis: this.createSolidTexture([255, 140, 0, 220]),
+      outline: this.createSolidTexture([255, 235, 0, 255]),
+      halo: this.createSolidTexture([0, 0, 0, 230]),
+      snap: this.createSolidTexture([255, 0, 220, 255]),
+    };
+    // u_alpha has no GLSL default (it would read as 0), so initialise it once up front.
+    this.gl.useProgram(this.spriteProgram);
+    this.gl.uniform1f(this.spriteAlphaUniformLocation, 1.0);
   }
 
   private compileShader(type: number, source: string): WebGLShader {
@@ -407,7 +433,8 @@ export class Renderer {
     platformVisualFlags: boolean[] = [],
     playerAnim: AnimationState | null,
     goals: Platform[] = [],
-    character: number = 0
+    character: number = 0,
+    authoring: AuthoringOverlay | null = null
   ) {
     this.gl.clearColor(0.1, 0.1, 0.1, 1.0);
     this.gl.clear(this.gl.COLOR_BUFFER_BIT);
@@ -465,6 +492,10 @@ export class Renderer {
       if (visualYOffset < 0 || visualYOffset > 0.2) visualYOffset = 0; // Only snap if close enough (avoid snapping when jumping high)
     }
 
+    // Authoring mode: fade the player + particles so platforms and the background stay readable.
+    const dimmed = authoring?.strongOutlines === true;
+    if (dimmed) this.gl.uniform1f(this.spriteAlphaUniformLocation, AUTHORING_DIM_ALPHA);
+
     if (playerTexture && playerAnim) {
       const animData = animationMap[playerAnim.currentState as keyof typeof animationMap] || animationMap.idle;
       const frame = playerAnim.currentFrame % animData.frames;
@@ -488,6 +519,8 @@ export class Renderer {
       }
     }
 
+    if (dimmed) this.gl.uniform1f(this.spriteAlphaUniformLocation, 1.0);
+
     if (decorLayers.foreground.length > 0) {
       this.drawDecorItems(cameraPosition, decorLayers.foreground);
       this.gl.uniform2f(this.spriteCameraPositionUniformLocation, cameraPosition.x, cameraPosition.y);
@@ -507,7 +540,65 @@ export class Renderer {
         );
       }
     }
+
+    if (authoring) this.drawAuthoringOverlay(cameraPosition, platforms, authoring);
   }
 
+  /** Solid axis-aligned rectangle in world space (sprite program must be active). */
+  private fillRect(centerX: number, centerY: number, width: number, height: number, texture: TextureObject) {
+    this.drawSprite({ x: centerX, y: centerY }, { x: width, y: height }, texture, { x: 1, y: 1 }, { x: 1, y: 1 }, { x: 0, y: 0 }, false);
+  }
 
+  /** Rectangle outline whose edges are centred on the rectangle boundary, `t` world units thick. */
+  private strokeRect(position: Vec2, size: Vec2, t: number, texture: TextureObject) {
+    this.fillRect(position.x, position.y + size.y / 2, size.x + t, t, texture); // top
+    this.fillRect(position.x, position.y - size.y / 2, size.x + t, t, texture); // bottom
+    this.fillRect(position.x - size.x / 2, position.y, t, size.y + t, texture); // left
+    this.fillRect(position.x + size.x / 2, position.y, t, size.y + t, texture); // right
+  }
+
+  /**
+   * Level-authoring aids, all in world space so they line up with platforms regardless of which
+   * background mode is active: grid, high-contrast platform outlines, and a snap marker.
+   * Line widths are constant in screen pixels, so they stay crisp at any canvas size.
+   */
+  private drawAuthoringOverlay(cameraPosition: Vec2, platforms: Platform[], overlay: AuthoringOverlay) {
+    const textures = this.authoringTextures;
+    if (!textures) return;
+    this.gl.useProgram(this.spriteProgram);
+    const { worldWidth, worldHeight } = this.setSpriteProjection();
+    this.gl.uniform2f(this.spriteCameraPositionUniformLocation, cameraPosition.x, cameraPosition.y);
+    this.gl.enable(this.gl.BLEND);
+    this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
+    const px = worldWidth / this.gl.canvas.width; // world units per screen pixel
+    const left = cameraPosition.x - worldWidth / 2;
+    const right = cameraPosition.x + worldWidth / 2;
+    const bottom = cameraPosition.y - worldHeight / 2;
+    const top = cameraPosition.y + worldHeight / 2;
+
+    if (overlay.grid && overlay.gridStep > 0) {
+      const step = overlay.gridStep;
+      const majorEvery = step >= 1 ? 5 : Math.max(1, Math.round(1 / step));
+      const pick = (index: number) => (index === 0 ? textures.gridAxis : index % majorEvery === 0 ? textures.gridMajor : textures.gridMinor);
+      const thickness = (index: number) => (index === 0 ? 3 * px : 1.5 * px);
+      for (const i of gridLineIndices(left, right, step)) {
+        this.fillRect(i * step, cameraPosition.y, thickness(i), worldHeight, pick(i));
+      }
+      for (const i of gridLineIndices(bottom, top, step)) {
+        this.fillRect(cameraPosition.x, i * step, worldWidth, thickness(i), pick(i));
+      }
+    }
+
+    if (overlay.strongOutlines) {
+      // Dark halo under a bright line keeps the edge visible on both light and dark paintings.
+      for (const platform of platforms) this.strokeRect(platform.position, platform.size, 6 * px, textures.halo);
+      for (const platform of platforms) this.strokeRect(platform.position, platform.size, 2.5 * px, textures.outline);
+    }
+
+    if (overlay.snapMarker) {
+      const { x, y } = overlay.snapMarker;
+      this.fillRect(x, y, 14 * px, 3 * px, textures.snap);
+      this.fillRect(x, y, 3 * px, 14 * px, textures.snap);
+    }
+  }
 }
