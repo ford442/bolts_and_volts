@@ -41,6 +41,8 @@ Silly, but with real danger and action. Expect sarcastic robot dialogue, over-th
 - Particle effects
 - Sound event hooks
 
+> Full schema (all fields, defaults, examples): [`docs/architecture/level-format.md`](./docs/architecture/level-format.md)
+
 ## Level Background Layers
 
 Levels can now define an optional `backgroundLayers` array for multi-depth parallax backgrounds:

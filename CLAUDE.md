@@ -73,6 +73,8 @@ C++ (Game logic) → Emscripten → src/wasm/main.js + main.wasm
 - `components/App.tsx` — top-level React shell (minimal). (The old duplicate `src/App.tsx` mentioned in earlier versions of this doc was removed — `src/main.tsx` only ever imported `./components/App`.)
 
 ### Level format (`public/levels/*.json`)
+Full schema: [`docs/architecture/level-format.md`](./docs/architecture/level-format.md)
+
 ```json
 {
   "spawn": { "x": 0.0, "y": -1.0 },

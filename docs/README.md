@@ -13,5 +13,6 @@ This project keeps contributor and AI guidance in `docs/` for fast discovery.
 - [AI Guide Index](./ai/README.md)
 - [Roadmap Plan](./plans/PLAN.md)
 - [Architecture Notes](./architecture/README.md)
+- [Level Format Reference](./architecture/level-format.md)
 - [CHANGELOG](../CHANGELOG.md)
 - [PR description template](../pr_description.md)
