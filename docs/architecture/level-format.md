@@ -13,7 +13,10 @@ Verified against the loaders as of this writing:
 2. `normalizeLevelData` validates the JSON and splits it in two:
    - **Core level** (`name`, `description`, `spawn`, `bounds`, `camera`, `platforms`, `goals`) is passed to C++ via `Game::loadLevel`. Only these whitelisted keys reach WASM.
    - **TS-only data** (`backgroundLayers`, `decor`, per-platform `visual`, `author`) stays in the renderer/UI layer. C++ never sees it.
-3. Parsing is **lenient**: malformed entries are skipped silently (no error), not rejected. If a field looks ignored, check its types first.
+3. Parsing is **lenient**: malformed entries are skipped or defaulted rather than rejected, so a broken level still boots.
+4. `validateLevel` (`src/lib/levelValidator.ts`) walks the same JSON and reports everything the loader dropped or defaulted. Each message has the form
+   `[level <id> (<file>)] platforms[3].size.y: expected finite number, found string "abc" — entry skipped`.
+   Errors go to `console.error`, warnings to `console.warn`; a valid level logs nothing. In dev builds a banner also shows the counts and the first issue. It re-runs on every load, including `R` reload. Absent optional sections (`camera`, `decor`, `backgroundLayers`) are never reported.
 
 ## Coordinate system
 
@@ -170,4 +173,4 @@ Condensed from `public/levels/demo-decor.json` (see that file for the full level
 2. Set `bounds` a bit wider than your platforms so the camera clamps sensibly.
 3. For tall levels, enable `camera.followY` and give background layers a small non-zero `scrollFactorY`.
 4. Add the file to `manifest.json`, run `npm run dev`, and pick it from the level dropdown (`R` reloads the level).
-5. Check the browser console for `Failed to load decor texture` warnings — silent skipping is the usual cause of "missing" decor.
+5. Check the browser console for `[level …]` errors/warnings after each load (field-path messages from the validator, plus `Failed to load decor texture` for images that don't exist).
