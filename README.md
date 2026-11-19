@@ -93,7 +93,20 @@ npm run test:e2e   # Playwright smoke test with a stubbed WASM module
 npm run lint
 ```
 
-The smoke test can run without an Emscripten build because it stubs the WASM module at the network layer. For a full game build, `npm run build:wasm` still requires `emcc` on `PATH`.
+The smoke test can run without an Emscripten build because it stubs the WASM module at the network layer.
+
+## Building the WASM module
+
+Compiling C++ requires the [Emscripten SDK](https://emscripten.org/docs/getting_started/downloads.html) (`emcc`). CI pins emsdk 3.1.61. `emcc` must be on `PATH`, or set `EMSDK_PATH` to your emsdk checkout (default `/root/emsdk`) and `scripts/with-emsdk.sh` will source it.
+
+| Script | Flags | Used by |
+| --- | --- | --- |
+| `npm run build:wasm:debug` | `-O1 -g -gsource-map -sASSERTIONS=2` | `npm run dev` |
+| `npm run build:wasm` | `-O3 -sASSERTIONS=0` | `npm run build` |
+
+Both share `cpp/emscripten-common.response`; see [`cpp/README.md`](./cpp/README.md) for the flag rationale. Output is `src/wasm/main.js` + `main.wasm` (gitignored).
+
+CI (`.github/workflows/ci.yml`) runs the release WASM build, lint, `tsc -b`, unit tests and e2e tests on pushes and PRs to `main`.
 
 ## Current Focus
 

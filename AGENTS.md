@@ -87,7 +87,7 @@ All commands run from the repository root.
 **Development:**
 ```bash
 npm install
-npm run dev           # build:wasm + vite dev server
+npm run dev           # build:wasm:debug (-O1, assertions) + vite dev server
 ```
 
 **Production build:**
@@ -97,7 +97,8 @@ npm run build         # build:wasm + tsc + vite build → dist/
 
 **WASM-only build:**
 ```bash
-npm run build:wasm    # emcc compiles cpp/src/*.cpp → src/wasm/main.js
+npm run build:wasm    # release emcc build (-O3) → src/wasm/main.js; flags in cpp/emscripten-*.response
+npm run build:wasm:debug  # debug emcc build (-O1 -g -gsource-map, ASSERTIONS=2)
 ```
 
 **Lint:**
@@ -197,7 +198,7 @@ Sound events are triggered from C++ via `setSoundCallback` → JS callback. Supp
 
 ## Known Issues / Blockers (2026-09-07)
 
-- **No CI.** `.github/` only has `copilot-instructions.md` — there's no `.github/workflows/` at all. `npm run lint`, `tsc`, and the test suites only run locally; nothing blocks a broken build, a failing lint, or a `Game.cpp` compile break from landing on `main`. `docs/plans/PLAN.md` §5–6 explicitly calls for "CI wiring for lint + type-check + build" as a roadmap item — it hasn't been started.
+- **CI added (2026-11-19).** `.github/workflows/ci.yml` runs release WASM build, lint, `tsc -b`, unit and e2e tests on push/PR to `main` (emsdk pinned to 3.1.61). Not yet confirmed green on GitHub — check the first PR run.
 - **Doc drift generally.** This file and `CLAUDE.md` hadn't been touched in ~78 days relative to the last code commit as of this audit, and the "Known Issues" list above had gone stale (three of its five items were already-fixed non-issues). Worth a periodic recheck of this file against the actual code rather than assuming it's current.
 - **`decor` / `backgroundLayers` level fields are undocumented here.** `public/levels/demo-decor.json` (wired into `public/levels/manifest.json` as a selectable level) uses `"decor"` and `"backgroundLayers"` arrays that are fully parsed and rendered client-side (`extractDecorConfigs` / `extractBackgroundLayerConfigs` in `src/components/GameCanvas.tsx`, drawn via `drawBackgroundLayer` in `src/gl/renderer.ts`) — but neither field is mentioned in the "Level Format" section above or in `CLAUDE.md`'s level-format block, and neither is parsed by `Game::loadLevel` in `cpp/src/Game.cpp` (they're TS/renderer-only, never reach C++). `docs/plans/PLAN.md` §1 still lists "expand level schema documentation (camera, backgroundLayers, decor, manifest)" as a not-yet-started roadmap item, which matches. `public/wazzy.png` is referenced from `demo-decor.json`'s `decor` array, so it is no longer a genuinely dead asset (it's just not rendered by anything other than this one demo level).
 

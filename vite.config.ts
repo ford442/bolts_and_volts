@@ -7,7 +7,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     watch: {
-      ignored: ['**/_codeql_detected_source_root/**'],
+      ignored: ['**/_codeql_detected_source_root/**', '**/.emscripten_cache/**'],
     },
   },
 });
