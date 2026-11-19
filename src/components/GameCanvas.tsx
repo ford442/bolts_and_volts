@@ -3,6 +3,17 @@ import { Renderer, type BackgroundLayer, type DecorLayers, type DecorItem, type 
 import { loadWasmModule, type Game, type InputState, type Platform, type Particle } from '../wasm/loader';
 import { AudioManager } from '../audio/AudioManager';
 import { DEFAULT_LEVELS, normalizeLevelManifest, resolveLevelEntry, type LevelManifestEntry } from '../lib/levelManifest';
+import {
+  GRID_STEPS,
+  INITIAL_AUTHORING_STATE,
+  cycleGridStep,
+  platformSnippet,
+  screenToWorld,
+  snapToGrid,
+  viewSize,
+  type AuthoringOverlay,
+  type AuthoringState,
+} from '../lib/authoring';
 import { reportLevelIssues, summarizeLevelIssues, validateLevel, type LevelIssueSummary } from '../lib/levelValidator';
 
 import vertexShaderSource from '../gl/shaders/tex.vert.glsl?raw';
@@ -288,6 +299,15 @@ const GameCanvas = () => {
   const reloadLevelRef = useRef<((targetLevelId?: string, cacheBust?: boolean) => Promise<void>) | null>(null);
   const levelsRef = useRef<LevelManifestEntry[]>(DEFAULT_LEVELS);
   const currentLevelIdRef = useRef<string>(DEFAULT_LEVELS[0].id);
+  // Level-authoring aids (G grid, Shift+G grid step, H authoring mode, P copy platform JSON).
+  // The ref is what the key handler and game loop read; the state mirrors it for the React HUD.
+  const authoringRef = useRef<AuthoringState>(INITIAL_AUTHORING_STATE);
+  const mouseRef = useRef<{ u: number; v: number } | null>(null);
+  const snappedCursorRef = useRef<{ x: number; y: number } | null>(null);
+  const copyNoteTimerRef = useRef<number | undefined>(undefined);
+  const [authoring, setAuthoring] = useState<AuthoringState>(INITIAL_AUTHORING_STATE);
+  const [authoringInfo, setAuthoringInfo] = useState('');
+  const [copyNote, setCopyNote] = useState('');
   const [volume, setVolume] = useState(0.5);
   const [levelComplete, setLevelComplete] = useState(false);
   const [debugInfo, setDebugInfo] = useState('');
@@ -329,6 +349,43 @@ const GameCanvas = () => {
         keysRef.current['KeyC'] = false;
       }
 
+      // Authoring hotkeys: only plain presses (no Ctrl/Meta/Alt, no key-repeat) and never while a form
+      // control has focus, so they can't fight the level dropdown, browser shortcuts or existing keys.
+      const target = e.target as HTMLElement | null;
+      const inFormControl = target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement;
+      if (!inFormControl && !e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat) {
+        const current = authoringRef.current;
+        let next: AuthoringState | null = null;
+        if (e.code === 'KeyG') {
+          // G toggles the grid; Shift+G cycles its spacing (and turns it on so the change is visible).
+          next = e.shiftKey
+            ? { ...current, grid: true, gridStepIndex: cycleGridStep(current.gridStepIndex) }
+            : { ...current, grid: !current.grid };
+        } else if (e.code === 'KeyH') {
+          next = { ...current, hud: !current.hud };
+        } else if (e.code === 'KeyP' && current.hud) {
+          const cursor = snappedCursorRef.current;
+          if (cursor) {
+            const snippet = platformSnippet(cursor);
+            const note = (text: string) => {
+              setCopyNote(text);
+              window.clearTimeout(copyNoteTimerRef.current);
+              copyNoteTimerRef.current = window.setTimeout(() => setCopyNote(''), 2000);
+            };
+            if (navigator.clipboard?.writeText) {
+              navigator.clipboard.writeText(snippet).then(() => note('Copied platform JSON'), () => note('Clipboard blocked — see console'));
+            } else {
+              note('Clipboard unavailable — see console');
+            }
+            console.info('[authoring] platform snippet:', snippet);
+          }
+        }
+        if (next) {
+          authoringRef.current = next;
+          setAuthoring(next);
+        }
+      }
+
       if (e.code.startsWith('Digit')) {
         const index = Number.parseInt(e.code.replace('Digit', ''), 10) - 1;
         if (index >= 0 && index < levelsRef.current.length) {
@@ -346,6 +403,7 @@ const GameCanvas = () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
       audioManager.stopMusic();
+      window.clearTimeout(copyNoteTimerRef.current);
     };
   }, [volume]);
 
@@ -606,6 +664,31 @@ const GameCanvas = () => {
 
           setDebugInfo(`[${currentCharacter}] pos: ${playerPosition.x.toFixed(1)},${playerPosition.y.toFixed(1)} | ${abilityLabel}: ${abilityStatus}`);
 
+          // Level-authoring overlay: cursor -> world coordinates and the options handed to the renderer.
+          const authoringState = authoringRef.current;
+          let overlay: AuthoringOverlay | null = null;
+          if (authoringState.grid || authoringState.hud) {
+            const gridStep = GRID_STEPS[authoringState.gridStepIndex];
+            const view = viewSize(canvas.width, canvas.height);
+            const mouse = mouseRef.current;
+            const world = mouse ? screenToWorld(mouse.u, mouse.v, cameraPosition, view) : null;
+            const snapped = world ? snapToGrid(world, gridStep) : null;
+            snappedCursorRef.current = snapped;
+            overlay = { grid: authoringState.grid, gridStep, strongOutlines: authoringState.hud, snapMarker: authoringState.hud ? snapped : null };
+            if (authoringState.hud) {
+              const f = (n: number) => n.toFixed(2);
+              setAuthoringInfo([
+                `AUTHORING  grid ${authoringState.grid ? gridStep : 'off'}`,
+                world ? `mouse  ${f(world.x)}, ${f(world.y)}` : 'mouse  (off canvas)',
+                snapped ? `snap   ${f(snapped.x)}, ${f(snapped.y)}` : 'snap   -',
+                `camera ${f(cameraPosition.x)}, ${f(cameraPosition.y)}`,
+                `view   x ${f(cameraPosition.x - view.x / 2)}..${f(cameraPosition.x + view.x / 2)}  y ${f(cameraPosition.y - view.y / 2)}..${f(cameraPosition.y + view.y / 2)}`,
+              ].join('\n'));
+            }
+          } else {
+            snappedCursorRef.current = null;
+          }
+
           const charForRenderer = currentCharacter === 'VOLTS' ? 1 : 0;
           renderer.drawScene(
             cameraPosition,
@@ -620,7 +703,8 @@ const GameCanvas = () => {
             platformVisualFlags,
             playerAnim,
             jsGoals,
-            charForRenderer
+            charForRenderer,
+            overlay
           );
           animationFrameId = requestAnimationFrame(gameLoop);
         };
@@ -654,9 +738,25 @@ const GameCanvas = () => {
     border: '2px solid var(--primary-color)'
   };
 
+  // Track the cursor as a fraction of the canvas content box so it stays correct however the canvas is stretched.
+  const handleCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = e.currentTarget;
+    const rect = canvas.getBoundingClientRect();
+    const u = (e.clientX - rect.left - canvas.clientLeft) / canvas.clientWidth;
+    const v = (e.clientY - rect.top - canvas.clientTop) / canvas.clientHeight;
+    mouseRef.current = u >= 0 && u <= 1 && v >= 0 && v <= 1 ? { u, v } : null;
+  };
+
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
-      <canvas ref={canvasRef} width={1280} height={720} style={canvasStyle} />
+      <canvas
+        ref={canvasRef}
+        width={1280}
+        height={720}
+        style={canvasStyle}
+        onMouseMove={handleCanvasMouseMove}
+        onMouseLeave={() => { mouseRef.current = null; }}
+      />
       <div style={{ position: 'absolute', top: '10px', right: '10px', zIndex: 10, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
         <select
           value={currentLevelId}
@@ -686,7 +786,7 @@ const GameCanvas = () => {
           onChange={handleVolumeChange}
         />
         <div style={{ fontSize: '11px', opacity: 0.7, fontFamily: 'monospace', color: '#0ff' }}>
-          1-9: switch map • R: reload map • C: switch dog • E: ability
+          1-9: switch map • R: reload map • C: switch dog • E: ability<br />G: grid (Shift+G: spacing) • H: authoring mode (P: copy platform)
         </div>
       </div>
       <div style={{ position: 'absolute', left: '10px', top: '10px', zIndex: 30, color: '#0ff', background: 'rgba(0,0,0,0.6)', padding: '6px', fontFamily: 'monospace', fontSize: '12px', borderRadius: '4px', maxWidth: '45%' }}>
@@ -699,6 +799,18 @@ const GameCanvas = () => {
         )}
         <div style={{ marginTop: 4 }}>{debugInfo}</div>
       </div>
+      {authoring.hud && (
+        <div
+          data-testid="authoring-hud"
+          style={{
+            position: 'absolute', left: '10px', bottom: '44px', zIndex: 30, color: '#ff0', background: 'rgba(0,0,0,0.75)',
+            padding: '6px 8px', fontFamily: 'monospace', fontSize: '12px', borderRadius: '4px', whiteSpace: 'pre', pointerEvents: 'none',
+          }}
+        >
+          {authoringInfo}
+          {copyNote && <div style={{ color: '#f0f', marginTop: 4 }}>{copyNote}</div>}
+        </div>
+      )}
       {import.meta.env.DEV && levelIssues && (
         <div
           role="status"
