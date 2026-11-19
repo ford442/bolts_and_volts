@@ -1,0 +1,36 @@
+{
+  "name": "Painted Panorama Demo",
+  "description": "A world-space painted background: every ledge, ramp step and landmark in the painting sits exactly under a collision platform.",
+  "author": "Core Team",
+  "spawn": { "x": -2.0, "y": -1.5 },
+  "bounds": { "min": { "x": -2.0, "y": -4.2 }, "max": { "x": 46.0, "y": 6.2 } },
+  "camera": { "followY": true, "verticalDeadzone": 0.9, "lookAheadY": 1.0 },
+  "backgroundLayers": [
+    { "image": "./background.png", "scrollFactorX": 0.08, "scrollFactorY": 0.02, "scale": 1.5 },
+    {
+      "mode": "world",
+      "image": "./levels/demo-pano/pano.png",
+      "position": { "x": 22.0, "y": 1.0 },
+      "size": { "x": 58.0, "y": 16.0 },
+      "parallaxX": 1.0,
+      "parallaxY": 1.0
+    }
+  ],
+  "platforms": [
+    { "position": { "x": 0.0,  "y": -3.0 }, "size": { "x": 12.0, "y": 0.4  }, "label": "ground" },
+    { "position": { "x": 7.6,  "y": -2.4 }, "size": { "x": 1.6,  "y": 0.25 }, "label": "ramp-1" },
+    { "position": { "x": 9.5,  "y": -1.9 }, "size": { "x": 1.6,  "y": 0.25 }, "label": "ramp-2" },
+    { "position": { "x": 11.5, "y": -1.4 }, "size": { "x": 1.6,  "y": 0.25 }, "label": "ramp-3" },
+    { "position": { "x": 13.5, "y": -0.9 }, "size": { "x": 1.6,  "y": 0.25 }, "label": "ramp-4" },
+    { "position": { "x": 17.5, "y": -0.5 }, "size": { "x": 5.0,  "y": 0.4  }, "label": "plateau" },
+    { "position": { "x": 22.0, "y": 0.1  }, "size": { "x": 1.8,  "y": 0.25 }, "label": "ledge-1" },
+    { "position": { "x": 25.0, "y": 0.6  }, "size": { "x": 1.8,  "y": 0.25 }, "label": "ledge-2" },
+    { "position": { "x": 28.0, "y": 1.1  }, "size": { "x": 1.8,  "y": 0.25 }, "label": "ledge-3" },
+    { "position": { "x": 33.0, "y": 0.4  }, "size": { "x": 6.0,  "y": 0.4  }, "label": "mesa" },
+    { "position": { "x": 39.5, "y": 0.6  }, "size": { "x": 5.0,  "y": 0.25 }, "label": "bridge" },
+    { "position": { "x": 44.5, "y": 1.0  }, "size": { "x": 4.0,  "y": 0.4  }, "label": "tower" }
+  ],
+  "goals": [
+    { "position": { "x": 45.0, "y": 1.8 }, "size": { "x": 1.2, "y": 1.2 } }
+  ]
+}

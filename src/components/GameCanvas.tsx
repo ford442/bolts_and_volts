@@ -20,13 +20,25 @@ const LAND_SFX_URL = './land.mp3';
 type JsonRecord = Record<string, unknown>;
 type Vec2 = { x: number; y: number };
 
-type BackgroundLayerConfig = {
+type ParallaxBackgroundConfig = {
+  mode: 'parallax';
   image: string;
   scrollFactorX: number;
   scrollFactorY: number;
   scale: number;
   offsetY: number;
 };
+
+type WorldBackgroundConfig = {
+  mode: 'world';
+  image: string;
+  position: Vec2;
+  size: Vec2;
+  parallaxX: number;
+  parallaxY: number;
+};
+
+type BackgroundLayerConfig = ParallaxBackgroundConfig | WorldBackgroundConfig;
 
 type DecorConfig = {
   image: string;
@@ -53,7 +65,8 @@ type LevelMetadata = {
   author: string;
 };
 
-const DEFAULT_BACKGROUND_LAYER: BackgroundLayerConfig = {
+const DEFAULT_BACKGROUND_LAYER: ParallaxBackgroundConfig = {
+  mode: 'parallax',
   image: BACKGROUND_URL,
   scrollFactorX: 0.4,
   scrollFactorY: 0.0,
@@ -88,6 +101,36 @@ const parsePlatformArray = (value: unknown): Platform[] => {
   return parsed;
 };
 
+/** Level `bounds` as a rectangle, or null when absent/invalid. */
+const parseBoundsRect = (level: JsonRecord): { min: Vec2; max: Vec2 } | null => {
+  if (!isRecord(level.bounds)) return null;
+  const min = parseVec2(level.bounds.min);
+  const max = parseVec2(level.bounds.max);
+  if (!min || !max || max.x <= min.x || max.y <= min.y) return null;
+  return { min, max };
+};
+
+/**
+ * World-mode layer. `position`/`size` are optional: a missing `size` fits the level bounds width
+ * (height follows the image aspect once the texture is known, see `loadBackgroundLayers`), and a
+ * missing `position` centres on the bounds. Returns null (layer skipped) when it cannot be placed.
+ */
+const parseWorldBackground = (layer: JsonRecord, image: string, level: JsonRecord): WorldBackgroundConfig | null => {
+  const bounds = parseBoundsRect(level);
+  const explicitSize = parseVec2(layer.size);
+  const explicitPosition = parseVec2(layer.position);
+  const size = explicitSize && explicitSize.x > 0 && explicitSize.y > 0
+    ? explicitSize
+    : (bounds ? { x: bounds.max.x - bounds.min.x, y: 0 } : null); // y = 0 -> derive from image aspect
+  const position = explicitPosition ?? (bounds
+    ? { x: (bounds.min.x + bounds.max.x) / 2, y: (bounds.min.y + bounds.max.y) / 2 }
+    : null);
+  if (!size || !position) return null;
+  const parallaxX = isFiniteNumber(layer.parallaxX) ? layer.parallaxX : 1.0;
+  const parallaxY = isFiniteNumber(layer.parallaxY) ? layer.parallaxY : 1.0;
+  return { mode: 'world', image, position, size, parallaxX, parallaxY };
+};
+
 const extractBackgroundLayerConfigs = (level: unknown): BackgroundLayerConfig[] => {
   if (!isRecord(level) || !Array.isArray(level.backgroundLayers)) {
     return [DEFAULT_BACKGROUND_LAYER];
@@ -99,7 +142,14 @@ const extractBackgroundLayerConfigs = (level: unknown): BackgroundLayerConfig[] 
     const image = typeof layer.image === 'string' ? layer.image.trim() : '';
     if (!image) continue;
 
+    if (layer.mode === 'world') {
+      const world = parseWorldBackground(layer, image, level);
+      if (world) parsed.push(world);
+      continue;
+    }
+
     parsed.push({
+      mode: 'parallax',
       image,
       scrollFactorX: isFiniteNumber(layer.scrollFactorX) ? layer.scrollFactorX : DEFAULT_BACKGROUND_LAYER.scrollFactorX,
       scrollFactorY: isFiniteNumber(layer.scrollFactorY) ? layer.scrollFactorY : DEFAULT_BACKGROUND_LAYER.scrollFactorY,
@@ -350,13 +400,24 @@ const GameCanvas = () => {
           return request;
         };
         const loadBackgroundLayers = async (configs: BackgroundLayerConfig[]): Promise<BackgroundLayer[]> => Promise.all(
-          configs.map(async (config) => ({
-            texture: await loadBackgroundTexture(config.image),
-            scrollFactorX: config.scrollFactorX,
-            scrollFactorY: config.scrollFactorY,
-            scale: config.scale,
-            offsetY: config.offsetY,
-          }))
+          configs.map(async (config): Promise<BackgroundLayer> => {
+            if (config.mode === 'world') {
+              // Clamp-to-edge texture: a placed pano must not wrap around its rectangle.
+              const texture = await loadDecorTexture(config.image);
+              const size = config.size.y > 0
+                ? config.size
+                : { x: config.size.x, y: config.size.x * (texture.height / texture.width) };
+              return { mode: 'world', texture, position: config.position, size, parallaxX: config.parallaxX, parallaxY: config.parallaxY };
+            }
+            return {
+              mode: 'parallax',
+              texture: await loadBackgroundTexture(config.image),
+              scrollFactorX: config.scrollFactorX,
+              scrollFactorY: config.scrollFactorY,
+              scale: config.scale,
+              offsetY: config.offsetY,
+            };
+          })
         );
 
         const loadDecorLayers = async (configs: DecorConfig[]): Promise<DecorLayers> => {

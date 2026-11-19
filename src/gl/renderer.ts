@@ -11,13 +11,33 @@ export type TextureLoadOptions = {
   pixelated?: boolean;
 };
 
-export type BackgroundLayer = {
+/** Full-screen camera-parallax quad (the original background layer kind). */
+export type ParallaxBackgroundLayer = {
+  mode: 'parallax';
   texture: TextureObject;
   scrollFactorX: number;
   scrollFactorY: number;
   scale: number;
   offsetY: number;
 };
+
+/**
+ * A painted image placed at a fixed rectangle in world space, so platforms can be authored
+ * against it. `parallaxX/Y` of 1 keep it locked to the world; smaller values let it drift
+ * slowly while staying aligned whenever the camera is at the image's centre.
+ */
+export type WorldBackgroundLayer = {
+  mode: 'world';
+  texture: TextureObject;
+  /** Centre of the image, world units. */
+  position: Vec2;
+  /** Full width/height, world units. */
+  size: Vec2;
+  parallaxX: number;
+  parallaxY: number;
+};
+
+export type BackgroundLayer = ParallaxBackgroundLayer | WorldBackgroundLayer;
 
 export type DecorLayerName = 'distant' | 'mid' | 'foreground';
 
@@ -290,7 +310,40 @@ export class Renderer {
   }
 
 
+  private setSpriteProjection() {
+    const aspectRatio = this.gl.canvas.width / this.gl.canvas.height;
+    const worldWidth = 10.0;
+    const worldHeight = worldWidth / aspectRatio;
+    const projectionMatrix = [2.0 / worldWidth, 0, 0, 0, 0, 2.0 / worldHeight, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1];
+    this.gl.uniformMatrix4fv(this.spriteProjectionMatrixUniformLocation, false, projectionMatrix);
+    return { worldWidth, worldHeight };
+  }
+
+  private drawWorldBackgroundLayer(cameraPosition: Vec2, layer: WorldBackgroundLayer) {
+    // Parallax pivots on the image centre: effective camera = centre + (camera - centre) * factor.
+    // factor 1 is identical to the world camera; the image is exactly aligned when the camera sits at its centre.
+    const effectiveCamera = {
+      x: layer.position.x + (cameraPosition.x - layer.position.x) * layer.parallaxX,
+      y: layer.position.y + (cameraPosition.y - layer.position.y) * layer.parallaxY,
+    };
+    this.gl.useProgram(this.spriteProgram);
+    const { worldWidth, worldHeight } = this.setSpriteProjection();
+    // Cheap cull: skip the draw when the image rectangle is entirely off screen.
+    const dx = Math.abs(layer.position.x - effectiveCamera.x);
+    const dy = Math.abs(layer.position.y - effectiveCamera.y);
+    if (dx > (layer.size.x + worldWidth) / 2 || dy > (layer.size.y + worldHeight) / 2) return;
+    this.gl.enable(this.gl.BLEND);
+    this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
+    this.gl.uniform2f(this.spriteCameraPositionUniformLocation, effectiveCamera.x, effectiveCamera.y);
+    const full = { x: layer.texture.width, y: layer.texture.height };
+    this.drawSprite(layer.position, layer.size, layer.texture, full, full, { x: 0, y: 0 }, false, 0, false);
+  }
+
   private drawBackgroundLayer(cameraPosition: Vec2, layer: BackgroundLayer) {
+    if (layer.mode === 'world') {
+      this.drawWorldBackgroundLayer(cameraPosition, layer);
+      return;
+    }
     this.gl.useProgram(this.backgroundProgram);
     this.gl.bindTexture(this.gl.TEXTURE_2D, layer.texture.texture);
     this.gl.uniform1i(this.backgroundTextureUniformLocation, 0);
@@ -364,11 +417,7 @@ export class Renderer {
       }
     }
     this.gl.useProgram(this.spriteProgram);
-    const aspectRatio = this.gl.canvas.width / this.gl.canvas.height;
-    const worldWidth = 10.0;
-    const worldHeight = worldWidth / aspectRatio;
-    const projectionMatrix = [2.0 / worldWidth, 0, 0, 0, 0, 2.0 / worldHeight, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1];
-    this.gl.uniformMatrix4fv(this.spriteProjectionMatrixUniformLocation, false, projectionMatrix);
+    this.setSpriteProjection();
     this.gl.uniform2f(this.spriteCameraPositionUniformLocation, cameraPosition.x, cameraPosition.y);
     this.gl.enable(this.gl.BLEND);
     this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
