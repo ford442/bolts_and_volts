@@ -13,6 +13,13 @@
       "name": "Decor Depth Demo",
       "description": "Showcases layered decor, parallax backgrounds, and vertical camera movement.",
       "author": "Core Team"
+    },
+    {
+      "id": "demo-pano",
+      "file": "demo-pano.json",
+      "name": "Painted Panorama Demo",
+      "description": "World-space painted background with platforms aligned to its ledges, ramp and landmarks.",
+      "author": "Core Team"
     }
   ]
 }

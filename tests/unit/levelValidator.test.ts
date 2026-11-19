@@ -17,7 +17,7 @@ const validLevel = () => ({
 const paths = (level: unknown) => validateLevel(level).map((i) => `${i.severity}:${i.path}`);
 
 describe('validateLevel — shipped levels', () => {
-  for (const name of ['test-1', 'demo-decor']) {
+  for (const name of ['test-1', 'demo-decor', 'demo-pano']) {
     it(`${name}.json has no issues`, () => {
       const json = JSON.parse(readFileSync(`public/levels/${name}.json`, 'utf8'));
       expect(validateLevel(json)).toEqual([]);
@@ -89,6 +89,63 @@ describe('validateLevel — platforms and goals', () => {
   it('allows the documented `label` and `visual` keys', () => {
     const level = { ...validLevel(), platforms: [{ position: { x: 0, y: 0 }, size: { x: 1, y: 1 }, label: 'a', visual: false }] };
     expect(validateLevel(level)).toEqual([]);
+  });
+});
+
+describe('validateLevel — world-space backgroundLayers', () => {
+  const world = (extra: Record<string, unknown> = {}) => ({
+    mode: 'world',
+    image: './pano.png',
+    position: { x: 24, y: 0 },
+    size: { x: 56, y: 18 },
+    ...extra,
+  });
+
+  it('accepts a complete world layer and a parallax layer in the same level without issues', () => {
+    const level = { ...validLevel(), backgroundLayers: [{ image: './a.png', scrollFactorX: 0.1 }, world({ parallaxX: 0.15, parallaxY: 0.05 })] };
+    expect(paths(level)).toEqual([]);
+  });
+
+  it('is silent for a world layer that omits position/size when bounds are usable (fits to bounds)', () => {
+    const level = { ...validLevel(), backgroundLayers: [{ mode: 'world', image: './pano.png' }] };
+    expect(paths(level)).toEqual([]);
+  });
+
+  it('errors with field paths when a world layer cannot be placed (no rectangle, no bounds)', () => {
+    const { bounds: _bounds, ...noBounds } = validLevel();
+    const level = { ...noBounds, backgroundLayers: [{ mode: 'world', image: './pano.png' }] };
+    expect(paths(level)).toEqual(['error:backgroundLayers[0].position', 'error:backgroundLayers[0].size']);
+  });
+
+  it('warns per bad axis / non-positive size and says the bounds fallback is used', () => {
+    const level = {
+      ...validLevel(),
+      backgroundLayers: [world({ position: { x: 'a', y: 0 }, size: { x: 56, y: -1 }, parallaxX: 'x' })],
+    };
+    expect(paths(level)).toEqual([
+      'warning:backgroundLayers[0].position.x',
+      'warning:backgroundLayers[0].size',
+      'warning:backgroundLayers[0].parallaxX',
+    ]);
+    expect(validateLevel(level)[0].effect).toMatch(/bounds/);
+  });
+
+  it('flags keys that do not apply to the layer mode', () => {
+    const level = {
+      ...validLevel(),
+      backgroundLayers: [world({ scrollFactorX: 0.2, scale: 2 }), { image: './a.png', position: { x: 0, y: 0 }, parallaxX: 1 }],
+    };
+    expect(paths(level)).toEqual([
+      'warning:backgroundLayers[0].scrollFactorX',
+      'warning:backgroundLayers[0].scale',
+      'warning:backgroundLayers[1].position',
+      'warning:backgroundLayers[1].parallaxX',
+    ]);
+  });
+
+  it('warns on an unknown mode and still requires an image', () => {
+    const level = { ...validLevel(), backgroundLayers: [{ image: './a.png', mode: 'worldspace' }, world({ image: '' })] };
+    expect(paths(level)).toEqual(['warning:backgroundLayers[0].mode', 'error:backgroundLayers[1].image']);
   });
 });
 

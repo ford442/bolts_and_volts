@@ -37,7 +37,7 @@ Verified against the loaders as of this writing:
 | `camera` | no | object | C++ | See below. |
 | `platforms` | effectively yes | array | C++ + renderer | If missing/empty/all-invalid, a **built-in fallback platform set** is loaded instead. |
 | `goals` | no | array | C++ | Touching one completes the level. |
-| `backgroundLayers` | no | array | renderer | Default: single `./background.png` layer. |
+| `backgroundLayers` | no | array | renderer | Parallax and/or world-space painted layers. Default: single `./background.png` parallax layer. |
 | `decor` | no | array | renderer | Default: none. |
 
 ### `platforms[]`
@@ -70,17 +70,52 @@ Wrong-typed keys are dropped individually (e.g. `"followY": "yes"` is ignored).
 
 ### `backgroundLayers[]`
 
-Full-screen parallax quads, drawn in listed order (**farthest first**). If the array is missing or yields no valid layers, one default layer is used.
+Drawn in listed order (**farthest first**), before platforms and decor. Two kinds, chosen by `mode`; parallax layers and world layers can be mixed freely in one array. If the array is missing or yields no valid layers, one default parallax layer is used.
+
+Common key: `image` (required, string) — URL relative to `public/`, e.g. `./background.png`. Entries with empty/missing `image` are skipped. `mode` is `"parallax"` (default, so existing levels need no change) or `"world"`; any other value falls back to `"parallax"`.
+
+#### `mode: "parallax"` (default)
+
+Full-screen quads driven by camera scroll factors — good for atmosphere, not tied to platform coordinates.
 
 | Key | Required | Type | Default | Notes |
 |---|---|---|---|---|
-| `image` | yes | string | — | URL relative to `public/`, e.g. `./background.png`. Entries with empty/missing `image` are skipped. |
 | `scrollFactorX` | no | number | `0.4` | `0` = fixed to screen, `1` = moves with the world. |
 | `scrollFactorY` | no | number | `0.0` | Needs `camera.followY` to have any visible effect. |
 | `scale` | no | number | `1.0` | Clamped to `>= 0.01`. |
 | `offsetY` | no | number | `0.0` | World units; shifts the layer vertically. |
 
-**Panorama tip:** layers tile horizontally, so use seamless/wrapping images for wide pans. Stack 2–3 layers with increasing `scrollFactorX` (e.g. 0.05 → 0.2 → 0.4) for depth. If an image fails to load, the level load falls back to the default background.
+**Panorama tip:** parallax layers tile horizontally, so use seamless/wrapping images for wide pans. Stack 2–3 layers with increasing `scrollFactorX` (e.g. 0.05 → 0.2 → 0.4) for depth. If an image fails to load, the level load falls back to the default background.
+
+#### `mode: "world"` — painted panorama placed in world space
+
+A single image occupying a fixed rectangle in world units, so painted ledges, ramps and landmarks can line up with real platform coordinates. It does **not** tile or wrap, and it is drawn through the sprite pipeline, so it respects alpha: paint sky as transparent and a parallax layer listed before it shows through.
+
+| Key | Required | Type | Default | Notes |
+|---|---|---|---|---|
+| `position` | no | `{x, y}` | centre of `bounds` | **Centre** of the image, world units (same convention as platforms and decor). |
+| `size` | no | `{x, y}` | bounds width × image aspect | Full width/height in world units. Both axes must be `> 0`. |
+| `parallaxX` / `parallaxY` | no | number | `1.0` | `1` = locked to the world (platforms stay exactly aligned). `< 1` drifts slowly for depth. |
+
+- **Fit to bounds:** omit `size` and/or `position` and the layer is fitted to the level `bounds` (width = bounds width, height from the image aspect ratio, centred on the bounds). With no explicit rectangle *and* no usable `bounds` the layer is skipped, and the validator reports an error.
+- **Parallax stays grounded:** the effective camera is `centre + (camera − centre) × factor`, so the painting is exactly aligned with the platforms whenever the camera is at the image's centre and drifts by `(1 − factor) ×` the camera's distance from that centre. Use `1.0` wherever the player must read the art as terrain; use a small drift (e.g. `0.9`) only for backdrop landmarks.
+- **Pixel scale:** world units are not pixels. At the default viewport (10 world units wide) a 1280px-wide screen shows ~128 screen px per unit, so aim for ≥ 64 image px per unit; a 58 × 16 unit pano at 64 px/unit is 3712 × 1024.
+- **Camera coverage:** the viewport extends half a screen (5 units horizontally; `5 / aspect` vertically) beyond the camera position, and `bounds` clamps the *camera*. To avoid showing empty space, inset `bounds` from the image edges by those amounts, or keep a parallax layer underneath.
+- **Alignment workflow:** pick a pixels-per-unit scale, map world → image pixels with `px = (x − (position.x − size.x/2)) × ppu`, `py = ((position.y + size.y/2) − y) × ppu`, and paint each ledge's top surface on a platform's top edge (`position.y + size.y/2`). `scripts/gen_demo_pano.py` does exactly this for the demo level, reading platform coordinates straight from the JSON.
+- A world layer whose image fails to load triggers the same fallback as any background layer (default background, console error). The draw is skipped on frames where the image is entirely off screen.
+
+Example (from `public/levels/demo-pano.json`):
+
+```json
+"backgroundLayers": [
+  { "image": "./background.png", "scrollFactorX": 0.08, "scrollFactorY": 0.02, "scale": 1.5 },
+  { "mode": "world", "image": "./levels/demo-pano/pano.png",
+    "position": { "x": 22.0, "y": 1.0 }, "size": { "x": 58.0, "y": 16.0 },
+    "parallaxX": 1.0, "parallaxY": 1.0 }
+]
+```
+
+The validator warns when parallax-only keys (`scrollFactor*`, `scale`, `offsetY`) appear on a world layer, or world-only keys (`position`, `size`, `parallaxX/Y`) on a parallax layer, since they have no effect.
 
 ### `decor[]`
 

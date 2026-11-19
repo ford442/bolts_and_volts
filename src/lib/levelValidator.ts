@@ -32,7 +32,12 @@ const TOP_LEVEL_KEYS = ['name', 'description', 'author', 'spawn', 'bounds', 'cam
 const PLATFORM_KEYS = ['position', 'size', 'visual', 'label'];
 const GOAL_KEYS = ['position', 'size', 'label'];
 const CAMERA_KEYS = ['followY', 'verticalDeadzone', 'lookAheadY'];
-const BACKGROUND_LAYER_KEYS = ['image', 'scrollFactorX', 'scrollFactorY', 'scale', 'offsetY', 'label'];
+const BACKGROUND_LAYER_KEYS = [
+  'image', 'mode', 'scrollFactorX', 'scrollFactorY', 'scale', 'offsetY',
+  'position', 'size', 'parallaxX', 'parallaxY', 'label',
+];
+const PARALLAX_ONLY_KEYS = ['scrollFactorX', 'scrollFactorY', 'scale', 'offsetY'];
+const WORLD_ONLY_KEYS = ['position', 'size', 'parallaxX', 'parallaxY'];
 const DECOR_KEYS = [
   'image', 'texture', 'position', 'size', 'layer', 'parallaxFactor', 'parallax',
   'parallaxX', 'parallaxY', 'scrollFactorX', 'scrollFactorY', 'uv', 'offsetY', 'label',
@@ -284,6 +289,41 @@ export const validateLevel = (level: unknown): LevelIssue[] => {
         }
         checkUnknownKeys(path, layer, BACKGROUND_LAYER_KEYS);
         checkImage(`${path}.image`, layer.image, 'entry skipped');
+        if (layer.mode !== undefined && layer.mode !== 'parallax' && layer.mode !== 'world') {
+          add('warning', `${path}.mode`, 'one of: parallax, world', layer.mode, 'using "parallax"');
+        }
+        if (layer.mode === 'world') {
+          for (const key of PARALLAX_ONLY_KEYS) {
+            if (layer[key] !== undefined) {
+              add('warning', `${path}.${key}`, 'only used by mode "parallax"', `${key} set on a world layer`, 'ignored');
+            }
+          }
+          // The loader skips the layer when it cannot be placed: no explicit rectangle and no usable bounds.
+          const usableBounds = bounds !== null && bounds.max.x > bounds.min.x && bounds.max.y > bounds.min.y;
+          const fallbackText = usableBounds ? 'ignored, derived from level bounds' : 'layer skipped (no usable level bounds to fall back on)';
+          const severity: LevelIssueSeverity = usableBounds ? 'warning' : 'error';
+          if (layer.position !== undefined) {
+            checkVec2(`${path}.position`, layer.position, severity, fallbackText);
+          } else if (!usableBounds) {
+            add('error', `${path}.position`, '{ "x": number, "y": number } (or valid level bounds to centre on)', undefined, fallbackText);
+          }
+          if (layer.size !== undefined) {
+            const size = checkVec2(`${path}.size`, layer.size, severity, fallbackText);
+            if (size && (size.x <= 0 || size.y <= 0)) {
+              add(severity, `${path}.size`, 'width and height > 0', `(${size.x}, ${size.y})`, fallbackText);
+            }
+          } else if (!usableBounds) {
+            add('error', `${path}.size`, '{ "x": number, "y": number } (or valid level bounds to fit)', undefined, fallbackText);
+          }
+          checkOptionalNumber(`${path}.parallaxX`, layer.parallaxX, 'ignored, using default 1 (locked to world)');
+          checkOptionalNumber(`${path}.parallaxY`, layer.parallaxY, 'ignored, using default 1 (locked to world)');
+          return;
+        }
+        for (const key of WORLD_ONLY_KEYS) {
+          if (layer[key] !== undefined) {
+            add('warning', `${path}.${key}`, 'only used by mode "world" (set "mode": "world")', `${key} set on a parallax layer`, 'ignored');
+          }
+        }
         checkOptionalNumber(`${path}.scrollFactorX`, layer.scrollFactorX, 'ignored, using default 0.4');
         const scrollY = checkOptionalNumber(`${path}.scrollFactorY`, layer.scrollFactorY, 'ignored, using default 0');
         const scale = checkOptionalNumber(`${path}.scale`, layer.scale, 'ignored, using default 1');
