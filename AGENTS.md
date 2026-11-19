@@ -148,6 +148,8 @@ The Emscripten build produces an ES module (`src/wasm/main.js`) with `EXPORT_ES6
 
 ### Level Format
 
+> Full schema reference (spawn, bounds, camera, backgroundLayers, decor, `visual`, manifest): [`docs/architecture/level-format.md`](./docs/architecture/level-format.md)
+
 Levels are JSON files like `public/levels/test-1.json`:
 ```json
 {
