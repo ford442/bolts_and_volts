@@ -28,7 +28,7 @@
 
 ## 4) Performance & Scale
 
-- Add visible-rect culling across platforms/decor/particles.
+- ~~Add visible-rect culling across platforms/decor/particles.~~ Done (render-only; `K` debug view). Spatial partitioning / physics broadphase is still open.
 - Introduce lightweight spatial partitioning for very large maps.
 - Profile rendering costs for large generated background art.
 

@@ -1,5 +1,16 @@
 import type { Vec2, Platform, AnimationState, Particle } from '../wasm/loader';
 import { gridLineIndices, type AuthoringOverlay } from '../lib/authoring';
+import {
+  CULL_DEBUG_INSET,
+  CULL_MARGIN,
+  boxOverlapsRect,
+  emptyCullStats,
+  insetRect,
+  parallaxRect,
+  visibleRect,
+  type CullStats,
+  type Rect,
+} from '../lib/culling';
 
 /** Opacity applied to the player and particles while level-authoring mode is on. */
 const AUTHORING_DIM_ALPHA = 0.3;
@@ -103,6 +114,8 @@ export class Renderer {
   private debugGreenTexture: TextureObject | null = null;
   private whiteTexture: TextureObject | null = null;
   private debugCyanTexture: TextureObject | null = null; // used for goal visualization (playability win)
+  // Draw counters from the most recent drawScene call (render-only visible-rect culling).
+  private cullStats: CullStats = emptyCullStats();
   // Level-authoring overlay colours (grid, platform outlines, snap marker).
   private authoringTextures: {
     gridMinor: TextureObject;
@@ -385,8 +398,15 @@ export class Renderer {
     this.gl.drawArrays(this.gl.TRIANGLES, 0, 6);
   }
 
-  private drawDecorItems(cameraPosition: Vec2, decorItems: DecorItem[]) {
+  private drawDecorItems(cameraPosition: Vec2, decorItems: DecorItem[], view: Vec2, cullMargin: number, cullInset: number) {
     for (const item of decorItems) {
+      this.cullStats.decor.total++;
+      // Decor is drawn against a parallax-scaled camera and nudged down by offsetY (see drawSprite),
+      // so test its drawn box against the view centred on that scaled camera.
+      let rect = parallaxRect(cameraPosition, item.parallaxX, item.parallaxY, view, cullMargin);
+      if (cullInset > 0) rect = insetRect(rect, cullInset);
+      if (!boxOverlapsRect({ x: item.position.x, y: item.position.y - item.offsetY }, item.size, rect)) continue;
+      this.cullStats.decor.drawn++;
       this.gl.uniform2f(
         this.spriteCameraPositionUniformLocation,
         cameraPosition.x * item.parallaxX,
@@ -434,7 +454,8 @@ export class Renderer {
     playerAnim: AnimationState | null,
     goals: Platform[] = [],
     character: number = 0,
-    authoring: AuthoringOverlay | null = null
+    authoring: AuthoringOverlay | null = null,
+    cullDebug: boolean = false
   ) {
     this.gl.clearColor(0.1, 0.1, 0.1, 1.0);
     this.gl.clear(this.gl.COLOR_BUFFER_BIT);
@@ -444,33 +465,51 @@ export class Renderer {
       }
     }
     this.gl.useProgram(this.spriteProgram);
-    this.setSpriteProjection();
+    const view = this.setSpriteProjection();
     this.gl.uniform2f(this.spriteCameraPositionUniformLocation, cameraPosition.x, cameraPosition.y);
     this.gl.enable(this.gl.BLEND);
     this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
 
+    // Render-only visible-rect culling: physics keeps using every platform. In cull-debug mode the
+    // rect is shrunk inside the screen so items visibly drop out before reaching the edge.
+    const cullInset = cullDebug ? CULL_DEBUG_INSET : 0;
+    let cullRect: Rect = visibleRect(cameraPosition, { x: view.worldWidth, y: view.worldHeight });
+    if (cullInset > 0) cullRect = insetRect(cullRect, cullInset);
+    const viewVec = { x: view.worldWidth, y: view.worldHeight };
+    const stats = (this.cullStats = emptyCullStats());
+    const platformVisible: boolean[] = new Array(platforms.length);
+    for (let i = 0; i < platforms.length; i++) {
+      const p = platforms[i];
+      platformVisible[i] = boxOverlapsRect(p.position, p.size, cullRect);
+      if (platformVisible[i]) stats.platforms.drawn++;
+    }
+    stats.platforms.total = platforms.length;
+
     if (decorLayers.distant.length > 0) {
-      this.drawDecorItems(cameraPosition, decorLayers.distant);
+      this.drawDecorItems(cameraPosition, decorLayers.distant, viewVec, CULL_MARGIN, cullInset);
       this.gl.uniform2f(this.spriteCameraPositionUniformLocation, cameraPosition.x, cameraPosition.y);
     }
 
     if (platformTexture) {
       for (let i = 0; i < platforms.length; i++) {
-        if (platformVisualFlags[i] === false) continue;
+        if (platformVisualFlags[i] === false || !platformVisible[i]) continue;
         const platform = platforms[i];
         this.drawSprite(platform.position, platform.size, platformTexture, { x: platformTexture.width, y: platformTexture.height }, { x: platformTexture.width, y: platformTexture.height }, { x: 0, y: 0 }, false, 0);
       }
     }
 
     if (decorLayers.mid.length > 0) {
-      this.drawDecorItems(cameraPosition, decorLayers.mid);
+      this.drawDecorItems(cameraPosition, decorLayers.mid, viewVec, CULL_MARGIN, cullInset);
       this.gl.uniform2f(this.spriteCameraPositionUniformLocation, cameraPosition.x, cameraPosition.y);
     }
 
     // Draw goals as bright cyan boxes so the player has a clear, visible target (Phase 1 playability fix).
     // Goals are triggers, not solid — drawn on top of platforms but under the player sprite.
     if (this.debugCyanTexture && goals.length > 0) {
+      stats.goals.total = goals.length;
       for (const goal of goals) {
+        if (!boxOverlapsRect(goal.position, goal.size, cullRect)) continue;
+        stats.goals.drawn++;
         this.drawSprite(goal.position, goal.size, this.debugCyanTexture, { x: 1, y: 1 }, { x: 1, y: 1 }, { x: 0, y: 0 }, false);
       }
     }
@@ -514,7 +553,10 @@ export class Renderer {
 
     // Draw particles
     if (this.whiteTexture) {
+      stats.particles.total = particles.length;
       for (const p of particles) {
+        if (!boxOverlapsRect(p.position, { x: p.size, y: p.size }, cullRect)) continue;
+        stats.particles.drawn++;
         this.drawSprite(p.position, { x: p.size, y: p.size }, this.whiteTexture, { x: 1, y: 1 }, { x: 1, y: 1 }, { x: 0, y: 0 }, false, 0);
       }
     }
@@ -522,13 +564,15 @@ export class Renderer {
     if (dimmed) this.gl.uniform1f(this.spriteAlphaUniformLocation, 1.0);
 
     if (decorLayers.foreground.length > 0) {
-      this.drawDecorItems(cameraPosition, decorLayers.foreground);
+      this.drawDecorItems(cameraPosition, decorLayers.foreground, viewVec, CULL_MARGIN, cullInset);
       this.gl.uniform2f(this.spriteCameraPositionUniformLocation, cameraPosition.x, cameraPosition.y);
     }
 
     // draw debug collision boxes (platforms = green, player = red)
     if (this.debugGreenTexture) {
-      for (const platform of platforms) {
+      for (let i = 0; i < platforms.length; i++) {
+        if (!platformVisible[i]) continue;
+        const platform = platforms[i];
         this.drawSprite(
           { x: platform.position.x, y: platform.position.y },
           { x: platform.size.x, y: platform.size.y },
@@ -541,7 +585,28 @@ export class Renderer {
       }
     }
 
-    if (authoring) this.drawAuthoringOverlay(cameraPosition, platforms, authoring);
+    if (authoring) {
+      this.drawAuthoringOverlay(cameraPosition, platforms.filter((_, i) => platformVisible[i]), authoring);
+    }
+    if (cullDebug) this.drawCullRect(cameraPosition, cullRect);
+  }
+
+  /** Draw counters (drawn / total) from the most recent `drawScene`. */
+  public getCullStats(): CullStats {
+    return this.cullStats;
+  }
+
+  /** Debug: outline the rect used for culling, in constant-pixel-width lines. */
+  private drawCullRect(cameraPosition: Vec2, rect: Rect) {
+    const textures = this.authoringTextures;
+    if (!textures) return;
+    this.gl.useProgram(this.spriteProgram);
+    const { worldWidth } = this.setSpriteProjection();
+    this.gl.uniform2f(this.spriteCameraPositionUniformLocation, cameraPosition.x, cameraPosition.y);
+    const px = worldWidth / this.gl.canvas.width;
+    const size = { x: rect.maxX - rect.minX, y: rect.maxY - rect.minY };
+    const center = { x: (rect.minX + rect.maxX) / 2, y: (rect.minY + rect.maxY) / 2 };
+    this.strokeRect(center, size, 3 * px, textures.snap);
   }
 
   /** Solid axis-aligned rectangle in world space (sprite program must be active). */
