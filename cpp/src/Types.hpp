@@ -8,6 +8,36 @@ struct Vec2 { float x; float y; };
 
 struct Platform { Vec2 position; Vec2 size; };
 
+// Overlap respawns the player at the level spawn. With speed > 0 it patrols x in [x0, x1] at a constant speed
+// (`direction` is +1 or -1); speed 0 is a static hazard (x0 == x1 == position.x). Disabled by a terminal.
+struct Hazard {
+    Vec2 position;
+    Vec2 size;
+    float x0;
+    float x1;
+    float speed;
+    bool enabled;
+    float direction;
+};
+
+// The one pickup. Overlap parents it to the player (sitting on top of the collision box); a level with a payload
+// only completes while it is carried. Respawn (or a reload) puts it back at `origin`.
+struct Payload {
+    Vec2 position;
+    Vec2 size;
+    Vec2 origin;
+    bool carried;
+};
+
+// Volts pressing the ability key while overlapping an unused terminal disables hazard `targetHazard` (index into
+// the level's hazards; -1 or out of range: nothing). One use per level load.
+struct Terminal {
+    Vec2 position;
+    Vec2 size;
+    int targetHazard;
+    bool used;
+};
+
 struct InputState { bool left; bool right; bool jump; bool abilityKey; };
 
 // Crosses the JS boundary as an int (FrameLayout header slot ANIM_STATE); keep values in sync with
@@ -56,8 +86,13 @@ namespace FrameLayout {
     constexpr int PLATFORM_COUNT = 12;
     constexpr int GOAL_COUNT = 13;
     constexpr int PARTICLE_COUNT = 14;
-    constexpr int HEADER_SIZE = 16;    // slot 15 reserved
+    constexpr int HAZARD_COUNT = 15;
+    constexpr int PAYLOAD_COUNT = 16;  // 0 or 1
+    constexpr int TERMINAL_COUNT = 17;
+    constexpr int HEADER_SIZE = 20;    // slots 18-19 reserved
+    // Body order: platforms, goals (BOX_STRIDE), hazards, payload, terminals (ENTITY_STRIDE), particles.
     constexpr int BOX_STRIDE = 4;      // platforms and goals: x, y, w, h
+    constexpr int ENTITY_STRIDE = 5;   // x, y, w, h, flag (hazard enabled / payload carried / terminal used)
     constexpr int PARTICLE_STRIDE = 4; // x, y, size, life / maxLife
 }
 

@@ -17,7 +17,7 @@ const validLevel = () => ({
 const paths = (level: unknown) => validateLevel(level).map((i) => `${i.severity}:${i.path}`);
 
 describe('validateLevel — shipped levels', () => {
-  for (const name of ['test-1', 'demo-decor', 'demo-pano']) {
+  for (const name of ['test-1', 'demo-decor', 'demo-pano', 'courier-1']) {
     it(`${name}.json has no issues`, () => {
       const json = JSON.parse(readFileSync(`public/levels/${name}.json`, 'utf8'));
       expect(validateLevel(json)).toEqual([]);
@@ -89,6 +89,75 @@ describe('validateLevel — platforms and goals', () => {
   it('allows the documented `label` and `visual` keys', () => {
     const level = { ...validLevel(), platforms: [{ position: { x: 0, y: 0 }, size: { x: 1, y: 1 }, label: 'a', visual: false }] };
     expect(validateLevel(level)).toEqual([]);
+  });
+});
+
+describe('validateLevel — hazards, payload, terminals', () => {
+  const courier = () => ({
+    ...validLevel(),
+    hazards: [
+      { position: { x: 8, y: -1 }, size: { x: 0.8, y: 0.6 }, patrol: { x0: 6, x1: 10, speed: 1.5 }, label: 'cat' },
+      { position: { x: 3, y: -1 }, size: { x: 0.4, y: 2 } },
+    ],
+    payload: { position: { x: 2, y: -0.2 }, size: { x: 0.4, y: 0.4 } },
+    terminals: [{ position: { x: 12, y: 1 }, size: { x: 0.6, y: 0.8 }, disablesHazard: 1 }],
+  });
+
+  it('is silent for the documented shape', () => {
+    expect(validateLevel(courier())).toEqual([]);
+  });
+
+  it('flags bad hazard entries and patrols', () => {
+    const level = courier();
+    (level.hazards as unknown[]).push(
+      { position: { x: 1, y: 'a' }, size: { x: 1, y: 1 } },
+      { position: { x: 3, y: 0 }, size: { x: 1, y: 1 }, patrol: { x0: 5, x1: 2, speed: -1 } },
+      { position: { x: 9, y: 0 }, size: { x: 1, y: 1 }, patrol: { x0: 0, x1: 2, speed: 1, sped: 2 } },
+      { position: { x: 0, y: 0 }, size: { x: 1, y: 1 }, patrol: { x0: 0, speed: 1 } },
+    );
+    const issues = validateLevel(level);
+    expect(issues.map((i) => `${i.severity}:${i.path}`)).toEqual([
+      'error:hazards[2].position.y',
+      'warning:hazards[3].patrol',
+      'warning:hazards[3].patrol.speed',
+      'warning:hazards[4].patrol.sped',
+      'warning:hazards[4].position.x',
+      'warning:hazards[5].patrol.x1',
+    ]);
+    expect(issues[1].effect).toBe('endpoints swapped');
+    expect(issues[3].effect).toContain('did you mean "speed"');
+    expect(issues[4].effect).toBe('clamped into the patrol range');
+    expect(issues[5].effect).toBe('patrol ignored, hazard is static');
+  });
+
+  it('checks the terminal target against the hazards the loader keeps', () => {
+    const level = courier();
+    level.terminals.push(
+      { position: { x: 0, y: 0 }, size: { x: 1, y: 1 }, disablesHazard: 2 },
+      { position: { x: 0, y: 0 }, size: { x: 1, y: 1 }, disablesHazard: 0.5 },
+      { position: { x: 0, y: 0 }, size: { x: 1, y: 1 } } as never,
+    );
+    expect(paths(level)).toEqual([
+      'warning:terminals[1].disablesHazard',
+      'error:terminals[2].disablesHazard',
+      'error:terminals[3].disablesHazard',
+    ]);
+
+    // An invalid hazard before the target shifts what the index means.
+    const shifted = courier();
+    shifted.hazards.unshift({ position: { x: 0, y: 0 } } as never);
+    shifted.terminals[0].disablesHazard = 1;
+    const issues = validateLevel(shifted).filter((i) => i.path.startsWith('terminals'));
+    expect(issues).toHaveLength(1);
+    expect(issues[0].effect).toBe('targets hazards[2] because invalid hazards before it are skipped');
+  });
+
+  it('flags a payload without goals or with a bad shape', () => {
+    const noGoals: Record<string, unknown> = courier();
+    delete noGoals.goals;
+    expect(paths(noGoals)).toEqual(['warning:goals', 'warning:payload']);
+    expect(paths({ ...courier(), payload: [] })).toEqual(['error:payload']);
+    expect(paths({ ...courier(), payload: { position: { x: 0, y: 0 } } })).toEqual(['error:payload.size']);
   });
 });
 

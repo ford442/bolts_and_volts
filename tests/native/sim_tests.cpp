@@ -587,3 +587,256 @@ TEST_CASE("the same inputs replay to the same state") {
     CHECK(count(logA, SimEventType::HoverStarted) >= 1);
     CHECK(count(logA, SimEventType::GoalReached) == 1);
 }
+
+// --- Courier entities: hazards, payload, terminals -------------------------------------------------------------
+
+namespace {
+
+Hazard staticHazard(float x, float y, float w, float h) { return Hazard{{x, y}, {w, h}, x, x, 0.0f, true, 1.0f}; }
+
+Hazard patrolHazard(float x, float y, float w, float h, float x0, float x1, float speed) {
+    return Hazard{{x, y}, {w, h}, x0, x1, speed, true, 1.0f};
+}
+
+// Sitting on floorLevel's floor (top 0.1).
+Payload payloadAt(float x) { return Payload{{x, 0.3f}, {0.4f, 0.4f}, {0.0f, 0.0f}, false}; }
+
+Terminal terminalAt(float x, int target) { return Terminal{{x, 0.5f}, {0.6f, 0.8f}, target, false}; }
+
+// Walk right (or left) until `type` fires; returns that tick's events. Fails after `limit` ticks.
+Events walkUntil(Simulation& sim, SimEventType type, const InputState& input = RIGHT, int limit = 600) {
+    for (int i = 0; i < limit; ++i) {
+        Events events = tick(sim, input);
+        if (has(events, type)) return events;
+    }
+    FAIL("event never fired");
+    return {};
+}
+
+void requireCarriedOnTop(const Simulation& sim) {
+    REQUIRE(sim.payload().has_value());
+    const Payload& payload = *sim.payload();
+    const PlayerBody& body = sim.player();
+    REQUIRE(payload.carried);
+    REQUIRE(payload.position.x == body.position.x);
+    REQUIRE(payload.position.y == doctest::Approx(body.position.y + (body.size.y + payload.size.y) * 0.5f));
+}
+
+} // namespace
+
+TEST_CASE("touching a hazard puts the player back at spawn, at rest") {
+    LevelSpec level = floorLevel();
+    level.hazards = {staticHazard(3.0f, 0.4f, 0.6f, 0.6f)};
+    Simulation sim = load(level);
+    settle(sim);
+
+    const Events events = walkUntil(sim, SimEventType::Respawned);
+    CHECK(count(events, SimEventType::Respawned) == 1);
+    const SimEvent hit = *std::find_if(events.begin(), events.end(), [](const SimEvent& e) { return e.type == SimEventType::Respawned; });
+    CHECK(hit.position.x > 3.0f - 0.6f);  // reported where it happened...
+    CHECK(sim.player().position.x == 0.0f);  // ...but the player is already back
+    CHECK(sim.player().position.y == 0.6f);
+    CHECK(sim.player().velocity.x == 0.0f);
+    CHECK(sim.player().velocity.y == 0.0f);
+    CHECK(sim.hazards()[0].enabled);  // hazards keep their state
+
+    settle(sim);  // and it plays on from there
+    CHECK(sim.player().position.x == 0.0f);
+}
+
+TEST_CASE("a static hazard (speed 0) does not move, a patrol stays inside [x0, x1] and turns at both ends") {
+    LevelSpec level = floorLevel({-15.0f, 0.6f});
+    level.hazards = {
+        staticHazard(8.0f, 0.4f, 0.8f, 0.6f),
+        patrolHazard(3.0f, 0.4f, 0.8f, 0.6f, 2.0f, 4.0f, 1.5f),
+        patrolHazard(9.0f, 0.4f, 0.8f, 0.6f, 12.0f, 10.0f, -2.0f),  // reversed endpoints, negative speed, start outside
+    };
+    Simulation sim = load(level);
+    CHECK(sim.hazards()[2].x0 == 10.0f);
+    CHECK(sim.hazards()[2].x1 == 12.0f);
+    CHECK(sim.hazards()[2].position.x == 10.0f);  // clamped into the range
+
+    float minX = 1e9f;
+    float maxX = -1e9f;
+    for (int i = 0; i < 600; ++i) {
+        CAPTURE(i);
+        tick(sim);
+        REQUIRE(sim.hazards()[0].position.x == 8.0f);
+        for (std::size_t h = 1; h < 3; ++h) {
+            const Hazard& hazard = sim.hazards()[h];
+            REQUIRE(hazard.position.x >= hazard.x0);
+            REQUIRE(hazard.position.x <= hazard.x1);
+            REQUIRE(hazard.position.y == 0.4f);
+        }
+        minX = std::min(minX, sim.hazards()[1].position.x);
+        maxX = std::max(maxX, sim.hazards()[1].position.x);
+    }
+    CHECK(minX == 2.0f);
+    CHECK(maxX == 4.0f);
+}
+
+TEST_CASE("the payload is picked up on overlap and rides on top of the player, through a jump") {
+    LevelSpec level = floorLevel();
+    level.payload = payloadAt(2.0f);
+    Simulation sim = load(level);
+    settle(sim);
+    REQUIRE_FALSE(sim.payload()->carried);
+    CHECK(sim.payload()->origin.x == 2.0f);
+
+    const Events pickup = walkUntil(sim, SimEventType::PayloadPickedUp);
+    CHECK(count(pickup, SimEventType::PayloadPickedUp) == 1);
+    requireCarriedOnTop(sim);
+
+    tick(sim, JUMP);
+    REQUIRE_FALSE(sim.player().grounded);
+    float highest = sim.player().position.y;
+    int ticks = 0;
+    while (!sim.player().grounded) {
+        REQUIRE(++ticks < 120);
+        const Events events = tick(sim, InputState{false, true, true, false});
+        CHECK_FALSE(has(events, SimEventType::PayloadPickedUp));  // never dropped and picked up again
+        requireCarriedOnTop(sim);
+        highest = std::max(highest, sim.player().position.y);
+    }
+    CHECK(highest > 0.5f + 0.5f);
+    for (int i = 0; i < 30; ++i) {
+        tick(sim, LEFT);
+        requireCarriedOnTop(sim);
+    }
+}
+
+TEST_CASE("with a payload in the level, the goal fires only while it is carried, and once") {
+    LevelSpec level = floorLevel();
+    level.goals = {box(3.0f, 0.6f, 1.0f, 1.0f)};  // x in [2.5, 3.5]
+    level.payload = payloadAt(6.0f);
+    Simulation sim = load(level);
+    settle(sim);
+
+    int signals = 0;
+    bool pickedUp = false;
+    while (!pickedUp) {
+        const Events events = tick(sim, RIGHT);
+        signals += count(events, SimEventType::GoalReached);
+        pickedUp = has(events, SimEventType::PayloadPickedUp);
+        REQUIRE(sim.player().position.x < 8.0f);
+    }
+    REQUIRE(sim.player().position.x > 4.0f);  // walked through the goal empty-handed
+    CHECK(signals == 0);
+
+    for (int i = 0; i < 240; ++i) signals += count(tick(sim, LEFT), SimEventType::GoalReached);
+    REQUIRE(sim.player().position.x < 2.0f);  // back through it, carrying
+    CHECK(signals == 1);
+    for (int i = 0; i < 240; ++i) signals += count(tick(sim, RIGHT), SimEventType::GoalReached);
+    CHECK(signals == 1);
+}
+
+TEST_CASE("respawning drops the payload back on its pad") {
+    LevelSpec level = floorLevel();
+    level.payload = payloadAt(2.0f);
+    level.hazards = {staticHazard(5.0f, 0.4f, 0.6f, 0.6f)};
+    Simulation sim = load(level);
+    settle(sim);
+
+    walkUntil(sim, SimEventType::PayloadPickedUp);
+    REQUIRE(sim.payload()->carried);
+    walkUntil(sim, SimEventType::Respawned);
+    CHECK_FALSE(sim.payload()->carried);
+    CHECK(sim.payload()->position.x == 2.0f);
+    CHECK(sim.payload()->position.y == 0.3f);
+
+    // Not carried until touched again: standing at spawn leaves it on the pad.
+    for (int i = 0; i < 60; ++i) {
+        tick(sim);
+        REQUIRE_FALSE(sim.payload()->carried);
+        REQUIRE(sim.payload()->position.x == 2.0f);
+    }
+    walkUntil(sim, SimEventType::PayloadPickedUp);
+    CHECK(sim.payload()->carried);
+
+    sim.loadLevel(level);  // a reload resets it too
+    CHECK_FALSE(sim.payload()->carried);
+    CHECK(sim.payload()->position.x == 2.0f);
+}
+
+TEST_CASE("a terminal under Volts disables its hazard; under Bolts it does nothing") {
+    LevelSpec level = floorLevel({2.0f, 0.6f});  // standing on the terminal
+    level.terminals = {terminalAt(2.0f, 1)};
+    level.hazards = {staticHazard(-6.0f, 0.4f, 0.6f, 0.6f), staticHazard(6.0f, 0.4f, 0.6f, 0.6f)};
+
+    SUBCASE("Bolts: nothing, and a grounded Bolts press is not a pound either") {
+        Simulation sim = load(level);
+        settle(sim);
+        const Events events = tick(sim, ABILITY);
+        CHECK_FALSE(has(events, SimEventType::TerminalUsed));
+        CHECK_FALSE(sim.terminals()[0].used);
+        CHECK(sim.hazards()[1].enabled);
+        CHECK(sim.abilityState() == AbilityState::Ready);
+        CHECK(has(walkUntil(sim, SimEventType::Respawned), SimEventType::Respawned));  // the hazard still bites
+    }
+    SUBCASE("Volts: the targeted hazard goes off, the ability is untouched, the way is clear") {
+        Simulation sim = load(level);
+        sim.switchCharacter();
+        settle(sim);
+        const Events events = tick(sim, ABILITY);
+        CHECK(count(events, SimEventType::TerminalUsed) == 1);
+        CHECK_FALSE(has(events, SimEventType::HoverStarted));
+        CHECK(sim.terminals()[0].used);
+        CHECK_FALSE(sim.hazards()[1].enabled);
+        CHECK(sim.hazards()[0].enabled);  // only the target
+        CHECK(sim.abilityState() == AbilityState::Ready);
+
+        for (int i = 0; i < 240; ++i) REQUIRE_FALSE(has(tick(sim, RIGHT), SimEventType::Respawned));
+        CHECK(sim.player().position.x > 8.0f);
+    }
+    SUBCASE("Volts in the air over it: the press is the terminal's, not a hover") {
+        Simulation sim = load(level);
+        sim.switchCharacter();
+        settle(sim);
+        tick(sim, JUMP);
+        tick(sim, IDLE);
+        tick(sim, IDLE);
+        REQUIRE_FALSE(sim.player().grounded);
+        const Events events = tick(sim, ABILITY);
+        CHECK(count(events, SimEventType::TerminalUsed) == 1);
+        CHECK_FALSE(has(events, SimEventType::HoverStarted));
+        CHECK(sim.abilityState() == AbilityState::Ready);
+        CHECK_FALSE(sim.hazards()[1].enabled);
+    }
+}
+
+TEST_CASE("the terminal shares the ability key without stealing it") {
+    LevelSpec level = floorLevel({-2.0f, 0.6f});
+    level.terminals = {terminalAt(0.0f, 0)};  // x in [-0.3, 0.3]
+    level.hazards = {staticHazard(6.0f, 0.4f, 0.6f, 0.6f)};
+    Simulation sim = load(level);
+    sim.switchCharacter();
+    settle(sim);
+
+    // Airborne away from the terminal, E is still hover.
+    tick(sim, JUMP);
+    for (int i = 0; i < 5; ++i) tick(sim, IDLE);
+    const Events hover = tick(sim, ABILITY);
+    CHECK(count(hover, SimEventType::HoverStarted) == 1);
+    CHECK_FALSE(has(hover, SimEventType::TerminalUsed));
+    CHECK_FALSE(sim.terminals()[0].used);
+    settle(sim);
+    REQUIRE(sim.abilityState() == AbilityState::Cooldown);
+
+    // Walk onto the terminal while hover is still cooling down: the terminal works anyway.
+    while (sim.player().position.x < -0.1f) tick(sim, RIGHT);
+    for (int i = 0; i < 10; ++i) tick(sim, IDLE);
+    REQUIRE(std::abs(sim.player().position.x) < 0.5f);
+    REQUIRE(sim.abilityState() == AbilityState::Cooldown);
+    CHECK(count(tick(sim, ABILITY), SimEventType::TerminalUsed) == 1);
+    CHECK_FALSE(sim.hazards()[0].enabled);
+    CHECK(sim.abilityState() == AbilityState::Cooldown);  // not reset, not consumed
+
+    // A used terminal hands the key back to the ability.
+    for (int i = 0; i < 150 && sim.abilityState() != AbilityState::Ready; ++i) tick(sim, IDLE);
+    REQUIRE(sim.abilityState() == AbilityState::Ready);
+    tick(sim, JUMP);
+    tick(sim, IDLE);
+    const Events again = tick(sim, ABILITY);
+    CHECK(count(again, SimEventType::HoverStarted) == 1);
+    CHECK_FALSE(has(again, SimEventType::TerminalUsed));
+}

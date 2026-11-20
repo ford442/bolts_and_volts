@@ -1,4 +1,4 @@
-import type { BackgroundLayer, DecorLayers, Renderer, TextureObject } from '../gl/renderer';
+import type { BackgroundLayer, DecorLayers, Renderer, SceneEntities, TextureObject } from '../gl/renderer';
 import type { AuthoringOverlay } from '../lib/authoring';
 import type { Game, GameModule } from '../wasm/loader';
 import type { KeyboardInput } from './input';
@@ -59,6 +59,8 @@ export type GameLoopOptions = {
 export const startGameLoop = (options: GameLoopOptions): (() => void) => {
   const { module, game, renderer, input, assets } = options;
   const frame = createFrameState();
+  // readFrame refills these arrays in place, so one object covers every frame.
+  const entities: SceneEntities = { hazards: frame.hazards, payloads: frame.payloads, terminals: frame.terminals };
   let accumulator = 0;
   let lastTime: number | null = null;
   let rafId = 0;
@@ -98,6 +100,7 @@ export const startGameLoop = (options: GameLoopOptions): (() => void) => {
       characterPresentation(frame.character).tint,
       options.overlay?.(frame) ?? null,
       cullDebug,
+      entities,
     );
     options.afterDraw?.(frame);
     rafId = requestAnimationFrame(tick);

@@ -146,6 +146,26 @@ public:
                 }
                 break;
             }
+            case SimEventType::Respawned:
+                // A puff where the player was caught (the player is already back at spawn).
+                for (int i = 0; i < 16; ++i) {
+                    const float angle = rng.unit() * TAU;
+                    const float speed = 1.0f + rng.unit() * 2.5f;
+                    const float spin = rng.centered() * 12.0f;
+                    emit(at, { std::cos(angle) * speed, std::sin(angle) * speed }, 0.45f, 0.1f, spin);
+                }
+                break;
+            case SimEventType::PayloadPickedUp:
+            case SimEventType::TerminalUsed: {
+                const Vec2 origin = { at.x, at.y + playerSize.y * 0.5f };
+                for (int i = 0; i < 8; ++i) {
+                    const float angle = rng.unit() * PI;
+                    const float speed = 0.8f + rng.unit() * 1.2f;
+                    const float spin = rng.centered() * 8.0f;
+                    emit(origin, { std::cos(angle) * speed, std::sin(angle) * speed }, 0.4f, 0.07f, spin);
+                }
+                break;
+            }
             case SimEventType::GoalReached:
                 break;
         }

@@ -1,8 +1,8 @@
 #ifndef SIMULATION_HPP
 #define SIMULATION_HPP
 
-// Deterministic platformer core: player body, platforms, goals, character + ability, camera follow. No
-// emscripten, no RNG, no JSON. Game (cpp/src/Game.cpp) adapts it to embind; tests/native drive it directly.
+// Deterministic platformer core: player body, platforms, goals, hazards, payload, terminals, character + ability,
+// camera follow. No emscripten, no RNG, no JSON. Game (cpp/src/Game.cpp) adapts it to embind; tests/native drive it directly.
 
 #include <optional>
 #include <vector>
@@ -26,6 +26,10 @@ struct LevelSpec {
     std::vector<Platform> goals;
     std::optional<LevelBounds> bounds;  // clamps the camera centre
     CameraTuning camera;
+    // Runtime fields (enabled, direction, carried, origin, used) are reset by Simulation::loadLevel.
+    std::vector<Hazard> hazards;
+    std::optional<Payload> payload;     // present: goals only complete while it is carried
+    std::vector<Terminal> terminals;
 };
 
 struct PlayerBody {
@@ -43,12 +47,12 @@ public:
     void loadLevel(const LevelSpec& level);
 
     // Latch the held keys for the next update(): horizontal target and facing, jump press (buffered) and release
-    // (jump cut), ability press (fires useAbility immediately).
+    // (jump cut), ability press (immediately: uses a terminal if Volts overlaps an unused one, else useAbility).
     void handleInput(const InputState& input);
 
     // One fixed tick. Order: buffered/coyote jump, horizontal acceleration, ability and buffer timers, gravity,
     // vertical move + resolve (sets grounded, subdivided for fast moves), horizontal move + resolve, landing and
-    // coyote bookkeeping, animation, camera, goals.
+    // coyote bookkeeping, hazard patrol + hazard overlap (respawn), payload pickup/carry, animation, camera, goals.
     void update(float deltaTime);
 
     void useAbility();
@@ -62,6 +66,10 @@ public:
     const AnimationState& animation() const { return animation_; }
     const std::vector<Platform>& platforms() const { return platforms_; }
     const std::vector<Platform>& goals() const { return goals_; }
+    const std::vector<Hazard>& hazards() const { return hazards_; }
+    const std::optional<Payload>& payload() const { return payload_; }
+    const std::vector<Terminal>& terminals() const { return terminals_; }
+    const Vec2& respawnPoint() const { return respawnPoint_; }
     float coyoteTimer() const { return coyoteTimer_; }
     CharacterType character() const { return character_; }
     AbilityState abilityState() const { return abilityState_; }
@@ -86,6 +94,11 @@ private:
     void clampCamera();
     void checkGoals();
     void startCooldown();
+    bool tryUseTerminal();
+    void moveHazards(float dt);
+    bool touchingHazard() const;
+    void respawn();
+    void updatePayload();
 
     PlayerBody player_;
     Vec2 camera_{0.0f, 0.0f};
@@ -96,6 +109,10 @@ private:
     std::vector<Platform> goals_;
     std::vector<bool> goalReached_;
     float minPlatformHalfHeight_ = 0.0f;
+    std::vector<Hazard> hazards_;
+    std::optional<Payload> payload_;
+    std::vector<Terminal> terminals_;
+    Vec2 respawnPoint_{0.0f, 0.0f};  // the level spawn, or where the player stood when a spawn-less level loaded
 
     AnimationState animation_{PlayerState::Idle, 0, false};
     float animationTimer_ = 0.0f;

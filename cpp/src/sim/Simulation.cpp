@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <utility>
 
 namespace {
 
@@ -18,7 +19,7 @@ constexpr float ANIMATION_FRAME_TIME = 0.25f;
 constexpr float RUN_SPEED_THRESHOLD = 0.01f;
 constexpr float CAMERA_LOOKAHEAD_SPEED = 0.5f;  // |v| above which the camera leads the player
 
-// `margin` 0 is a strict overlap test (goals); CONTACT_EPSILON for solid platforms.
+// `margin` 0 is a strict overlap test (goals, hazards, payload, terminals); CONTACT_EPSILON for solid platforms.
 bool boxesOverlap(const Vec2& posA, const Vec2& sizeA, const Vec2& posB, const Vec2& sizeB, float margin) {
     const float overlapX = (sizeA.x + sizeB.x) * 0.5f - std::abs(posA.x - posB.x);
     const float overlapY = (sizeA.y + sizeB.y) * 0.5f - std::abs(posA.y - posB.y);
@@ -47,6 +48,26 @@ void Simulation::loadLevel(const LevelSpec& level) {
         minPlatformHalfHeight_ = (i == 0) ? half : std::min(minPlatformHalfHeight_, half);
     }
 
+    hazards_ = level.hazards;
+    for (Hazard& hazard : hazards_) {
+        if (hazard.x0 > hazard.x1) std::swap(hazard.x0, hazard.x1);
+        hazard.speed = std::abs(hazard.speed);
+        if (hazard.speed > 0.0f) {
+            hazard.position.x = std::min(std::max(hazard.position.x, hazard.x0), hazard.x1);
+        } else {
+            hazard.x0 = hazard.x1 = hazard.position.x;
+        }
+        hazard.enabled = true;
+        hazard.direction = 1.0f;
+    }
+    payload_ = level.payload;
+    if (payload_) {
+        payload_->origin = payload_->position;
+        payload_->carried = false;
+    }
+    terminals_ = level.terminals;
+    for (Terminal& terminal : terminals_) terminal.used = false;
+
     abilityState_ = AbilityState::Ready;
     abilityActiveTimer_ = 0.0f;
     abilityCooldownTimer_ = 0.0f;
@@ -55,6 +76,7 @@ void Simulation::loadLevel(const LevelSpec& level) {
         player_.position = *level.spawn;
         player_.velocity = {0.0f, 0.0f};
     }
+    respawnPoint_ = player_.position;
     // Contact state belongs to the old platforms; the next update re-detects ground.
     player_.grounded = false;
     coyoteTimer_ = 0.0f;
@@ -89,7 +111,9 @@ void Simulation::handleInput(const InputState& input) {
     }
     jumpHeld_ = input.jump;
 
-    if (input.abilityKey && !abilityKeyHeld_) {
+    // One key, two uses: a terminal under Volts takes the press (ready or not, grounded or not); anywhere else it
+    // is the ability.
+    if (input.abilityKey && !abilityKeyHeld_ && !tryUseTerminal()) {
         useAbility();
     }
     abilityKeyHeld_ = input.abilityKey;
@@ -113,6 +137,9 @@ void Simulation::update(float deltaTime) {
     moveVertical(dt);
     moveHorizontal(dt);
     updateGroundState(wasGrounded, dt);
+    moveHazards(dt);
+    if (touchingHazard()) respawn();
+    updatePayload();
     updateAnimation(dt);
     updateCamera(dt);
     checkGoals();
@@ -369,6 +396,7 @@ void Simulation::clampCamera() {
 }
 
 void Simulation::checkGoals() {
+    if (payload_ && !payload_->carried) return;  // a courier level needs the package delivered
     for (std::size_t i = 0; i < goals_.size(); ++i) {
         if (goalReached_[i]) continue;
         if (boxesOverlap(player_.position, player_.size, goals_[i].position, goals_[i].size, 0.0f)) {
@@ -381,4 +409,74 @@ void Simulation::checkGoals() {
 void Simulation::startCooldown() {
     abilityState_ = AbilityState::Cooldown;
     abilityCooldownTimer_ = cooldownFor(character_);
+}
+
+bool Simulation::tryUseTerminal() {
+    if (character_ != CharacterType::Volts) return false;
+    for (Terminal& terminal : terminals_) {
+        if (terminal.used) continue;
+        if (!boxesOverlap(player_.position, player_.size, terminal.position, terminal.size, 0.0f)) continue;
+        terminal.used = true;
+        if (terminal.targetHazard >= 0 && static_cast<std::size_t>(terminal.targetHazard) < hazards_.size()) {
+            hazards_[static_cast<std::size_t>(terminal.targetHazard)].enabled = false;
+        }
+        emit(SimEventType::TerminalUsed);
+        return true;
+    }
+    return false;
+}
+
+// Patrols run at a constant speed and turn around at x0 / x1. A disabled hazard stops where it is.
+void Simulation::moveHazards(float dt) {
+    for (Hazard& hazard : hazards_) {
+        if (!hazard.enabled || !(hazard.speed > 0.0f)) continue;
+        hazard.position.x += hazard.direction * hazard.speed * dt;
+        if (hazard.position.x >= hazard.x1) {
+            hazard.position.x = hazard.x1;
+            hazard.direction = -1.0f;
+        } else if (hazard.position.x <= hazard.x0) {
+            hazard.position.x = hazard.x0;
+            hazard.direction = 1.0f;
+        }
+    }
+}
+
+bool Simulation::touchingHazard() const {
+    for (const Hazard& hazard : hazards_) {
+        if (hazard.enabled && boxesOverlap(player_.position, player_.size, hazard.position, hazard.size, 0.0f)) return true;
+    }
+    return false;
+}
+
+// Back to the spawn, at rest, with the payload on its pad. Hazards, terminals and goals keep their state; only a
+// level load resets those.
+void Simulation::respawn() {
+    emit(SimEventType::Respawned);  // where it happened
+    player_.position = respawnPoint_;
+    player_.velocity = {0.0f, 0.0f};
+    player_.grounded = false;
+    coyoteTimer_ = 0.0f;
+    jumpBuffered_ = false;
+    jumpBufferTimer_ = 0.0f;
+    abilityState_ = AbilityState::Ready;
+    abilityActiveTimer_ = 0.0f;
+    abilityCooldownTimer_ = 0.0f;
+    if (payload_) {
+        payload_->position = payload_->origin;
+        payload_->carried = false;
+    }
+}
+
+void Simulation::updatePayload() {
+    if (!payload_) return;
+    Payload& payload = *payload_;
+    if (!payload.carried && boxesOverlap(player_.position, player_.size, payload.position, payload.size, 0.0f)) {
+        payload.carried = true;
+        emit(SimEventType::PayloadPickedUp);
+    }
+    if (payload.carried) {
+        // Resting on top of the collision box, centred. Cosmetic only: a carried payload collides with nothing.
+        payload.position.x = player_.position.x;
+        payload.position.y = player_.position.y + (player_.size.y + payload.size.y) * 0.5f;
+    }
 }

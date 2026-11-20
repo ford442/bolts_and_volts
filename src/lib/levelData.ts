@@ -42,9 +42,15 @@ export type DecorConfig = {
   uv: [number, number, number, number] | null;
 };
 
+export type HazardPatrol = { x0: number; x1: number; speed: number };
+export type CoreHazard = Platform & { patrol?: HazardPatrol };
+/** `disablesHazard` indexes the level's *valid* hazards (dropped entries do not count). */
+export type CoreTerminal = Platform & { disablesHazard: number };
+
 /**
  * The subset of a level JSON that `Game::loadLevel` reads. `decor`, `backgroundLayers` and the per-platform
- * `visual` flag are TS-only and never cross into C++.
+ * `visual` flag are TS-only and never cross into C++. Hazards, payload and terminals cross as plain numbers too:
+ * C++ never parses JSON.
  */
 export type CoreLevel = {
   name?: string;
@@ -54,6 +60,10 @@ export type CoreLevel = {
   camera?: { followY?: boolean; verticalDeadzone?: number; lookAheadY?: number };
   platforms: Platform[];
   goals?: Platform[];
+  hazards?: CoreHazard[];
+  /** Present: the goals only complete while it is carried. */
+  payload?: Platform;
+  terminals?: CoreTerminal[];
 };
 
 export type LevelData = {
@@ -92,6 +102,48 @@ const parsePlatformArray = (value: unknown): Platform[] => {
     const size = parseVec2(item.size);
     if (!position || !size) continue;
     parsed.push({ position, size });
+  }
+  return parsed;
+};
+
+const parseBox = (item: unknown): Platform | null => {
+  if (!isRecord(item)) return null;
+  const position = parseVec2(item.position);
+  const size = parseVec2(item.size);
+  return position && size ? { position, size } : null;
+};
+
+/** A patrol needs finite `x0`, `x1` and `speed`; anything less leaves the hazard static. C++ orders x0/x1 and takes |speed|. */
+const parsePatrol = (value: unknown): HazardPatrol | null => {
+  if (!isRecord(value)) return null;
+  const { x0, x1, speed } = value;
+  if (!isFiniteNumber(x0) || !isFiniteNumber(x1) || !isFiniteNumber(speed)) return null;
+  return { x0, x1, speed };
+};
+
+const parseHazards = (value: unknown): CoreHazard[] => {
+  if (!Array.isArray(value)) return [];
+  const parsed: CoreHazard[] = [];
+  for (const item of value) {
+    const hazard: CoreHazard | null = parseBox(item);
+    if (!hazard) continue;
+    const patrol = parsePatrol((item as JsonRecord).patrol);
+    if (patrol) hazard.patrol = patrol;
+    parsed.push(hazard);
+  }
+  return parsed;
+};
+
+/** Terminals without a non-negative integer `disablesHazard` are dropped (they would do nothing). */
+const parseTerminals = (value: unknown): CoreTerminal[] => {
+  if (!Array.isArray(value)) return [];
+  const parsed: CoreTerminal[] = [];
+  for (const item of value) {
+    const box = parseBox(item);
+    if (!box) continue;
+    const target = (item as JsonRecord).disablesHazard;
+    if (!Number.isInteger(target) || (target as number) < 0) continue;
+    parsed.push({ ...box, disablesHazard: target as number });
   }
   return parsed;
 };
@@ -260,6 +312,12 @@ export const normalizeLevelData = (level: unknown): LevelData => {
 
   const goals = parsePlatformArray(level.goals);
   if (goals.length > 0) coreLevel.goals = goals;
+  const hazards = parseHazards(level.hazards);
+  if (hazards.length > 0) coreLevel.hazards = hazards;
+  const payload = parseBox(level.payload);
+  if (payload) coreLevel.payload = payload;
+  const terminals = parseTerminals(level.terminals);
+  if (terminals.length > 0) coreLevel.terminals = terminals;
 
   return {
     coreLevel,

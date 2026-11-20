@@ -54,6 +54,8 @@ export type CullStats = {
   platforms: { drawn: number; total: number };
   decor: { drawn: number; total: number };
   goals: { drawn: number; total: number };
+  /** Hazards, payload and terminals together. */
+  entities: { drawn: number; total: number };
   particles: { drawn: number; total: number };
 };
 
@@ -62,11 +64,12 @@ export function emptyCullStats(): CullStats {
     platforms: { drawn: 0, total: 0 },
     decor: { drawn: 0, total: 0 },
     goals: { drawn: 0, total: 0 },
+    entities: { drawn: 0, total: 0 },
     particles: { drawn: 0, total: 0 },
   };
 }
 
 export function formatCullStats(stats: CullStats): string {
   const f = (label: string, c: { drawn: number; total: number }) => `${label} ${c.drawn}/${c.total}`;
-  return `CULL  ${f('platforms', stats.platforms)}  ${f('decor', stats.decor)}  ${f('goals', stats.goals)}  ${f('particles', stats.particles)}`;
+  return `CULL  ${f('platforms', stats.platforms)}  ${f('decor', stats.decor)}  ${f('goals', stats.goals)}  ${f('entities', stats.entities)}  ${f('particles', stats.particles)}`;
 }
