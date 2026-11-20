@@ -21,7 +21,9 @@ import { DEFAULT_BACKGROUND_LAYER, isRecord, normalizeLevelData } from '../lib/l
 import { EMPTY_DECOR_LAYERS, createLevelAssetLoader } from '../game/levelAssets';
 import { KeyboardInput } from '../game/input';
 import { startGameLoop, type SceneAssets } from '../game/loop';
-import { AbilityState, type FrameState } from '../game/snapshot';
+import type { FrameState } from '../game/snapshot';
+import { createAbilityHudWriter } from '../game/abilityHud';
+import AbilityHud from './AbilityHud';
 
 import vertexShaderSource from '../gl/shaders/tex.vert.glsl?raw';
 import fragmentShaderSource from '../gl/shaders/tex.frag.glsl?raw';
@@ -31,8 +33,14 @@ import backgroundVertexSource from '../gl/shaders/background.vert.glsl?raw';
 const WAZZY_SPRITESHEET_URL = './wazzy_spritesheet.png';
 const PLATFORM_TEXTURE_URL = './platform.png';
 const MUSIC_URL = './background-music.mp3';
-const JUMP_SFX_URL = './jump.mp3';
-const LAND_SFX_URL = './land.mp3';
+// Keys are the sound names the simulation emits (`Game::dispatchEvents` in cpp/src/Game.cpp); `playSfx` ignores unknown names.
+const SFX_URLS: Record<string, string> = {
+  jump: './jump.mp3',
+  land: './land.mp3',
+  ground_pound: './ground_pound.mp3',
+  hover: './hover.mp3',
+  switch: './switch.mp3',
+};
 const INITIAL_VOLUME = 0.5;
 
 type LevelMetadata = {
@@ -47,16 +55,6 @@ const setText = (el: HTMLElement | null, text: string) => {
   if (el && el.textContent !== text) el.textContent = text;
 };
 
-const statusLine = (frame: FrameState): string => {
-  const volts = frame.character === 1;
-  const abilityLabel = volts ? 'Hover' : 'Ground Pound';
-  const abilityStatus = frame.abilityState === AbilityState.Ready
-    ? 'READY'
-    : frame.abilityState === AbilityState.Active ? 'ACTIVE' : `CD ${Math.ceil(frame.abilityCooldown * 100)}%`;
-  const { x, y } = frame.player.position;
-  return `[${volts ? 'VOLTS' : 'BOLTS'}] pos: ${x.toFixed(1)},${y.toFixed(1)} | ${abilityLabel}: ${abilityStatus}`;
-};
-
 /**
  * React shell around the game: mounts the canvas, level select, volume, overlays. Per-frame work lives in
  * `startGameLoop` (src/game/loop.ts); per-frame HUD text is written straight to DOM refs, so this component
@@ -64,7 +62,7 @@ const statusLine = (frame: FrameState): string => {
  */
 const GameCanvas = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const statusRef = useRef<HTMLDivElement>(null);
+  const abilityHudRef = useRef<HTMLDivElement>(null);
   const authoringInfoRef = useRef<HTMLDivElement>(null);
   const cullInfoRef = useRef<HTMLDivElement>(null);
   const audioManagerRef = useRef<AudioManager | null>(null);
@@ -191,8 +189,7 @@ const GameCanvas = () => {
     const initializeAndRun = async () => {
       try {
         await Promise.all([
-          audioManager.loadSfx('jump', JUMP_SFX_URL),
-          audioManager.loadSfx('land', LAND_SFX_URL),
+          ...Object.entries(SFX_URLS).map(([name, url]) => audioManager.loadSfx(name, url)),
           audioManager.loadMusic(MUSIC_URL)
         ]);
 
@@ -339,6 +336,9 @@ const GameCanvas = () => {
           return { grid: state.grid, gridStep, strongOutlines: state.hud, snapMarker: state.hud ? snapped : null };
         };
 
+        // Ability overlay: markup is rendered once below, the loop fills it in (no React state per frame).
+        const writeAbilityHud = createAbilityHudWriter(abilityHudRef.current!);
+
         stopLoop = startGameLoop({
           module: wasmModule,
           game,
@@ -349,7 +349,7 @@ const GameCanvas = () => {
           overlay: authoringOverlay,
           cullDebug: () => cullDebugRef.current,
           afterDraw: (frame) => {
-            setText(statusRef.current, statusLine(frame));
+            writeAbilityHud(frame);
             if (cullDebugRef.current) setText(cullInfoRef.current, formatCullStats(renderer.getCullStats()));
           },
         });
@@ -444,8 +444,8 @@ const GameCanvas = () => {
         {currentLevelMetadata.author && (
           <div style={{ opacity: 0.75, marginTop: 2 }}>by {currentLevelMetadata.author}</div>
         )}
-        {/* Written by the game loop (setText), not React. */}
-        <div ref={statusRef} data-testid="status-hud" style={{ marginTop: 4 }} />
+        {/* Character, ability and cooldown bar: written by the game loop, not React. */}
+        <AbilityHud rootRef={abilityHudRef} />
       </div>
       {cullDebug && (
         <div

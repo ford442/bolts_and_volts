@@ -2,6 +2,7 @@ import type { BackgroundLayer, DecorLayers, Renderer, TextureObject } from '../g
 import type { AuthoringOverlay } from '../lib/authoring';
 import type { Game, GameModule } from '../wasm/loader';
 import type { KeyboardInput } from './input';
+import { characterPresentation } from './characters';
 import { createFrameState, readFrame, viewFrame, type FrameState } from './snapshot';
 
 /** Simulation tick. `Game::update` always advances by exactly this much, so physics never depends on frame pacing. */
@@ -94,7 +95,7 @@ export const startGameLoop = (options: GameLoopOptions): (() => void) => {
       assets.platformVisualFlags,
       frame.anim,
       frame.goals,
-      frame.character,
+      characterPresentation(frame.character).tint,
       options.overlay?.(frame) ?? null,
       cullDebug,
     );

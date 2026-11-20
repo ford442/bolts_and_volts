@@ -53,7 +53,7 @@ Bolts & Volts is a 2D platformer combining C++ game logic with a React/WebGL2 fr
 
 3. **Assets & Levels**
    - Sprites: `public/wazzy_spritesheet.png`, `public/platform.png`, `public/background.png`
-   - Audio: `public/background-music.mp3`, `public/jump.mp3`, `public/land.mp3`
+   - Audio: `public/background-music.mp3` plus one `public/<name>.mp3` per SFX (`jump`, `land`, `ground_pound`, `hover`, `switch`)
    - Levels: `public/levels/test-1.json` (loaded and parsed by WASM)
 
 ### Data Flow

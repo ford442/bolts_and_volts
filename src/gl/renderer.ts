@@ -17,6 +17,14 @@ import {
 /** Opacity applied to the player and particles while level-authoring mode is on. */
 const AUTHORING_DIM_ALPHA = 0.3;
 
+/**
+ * Sprite tint: an RGB multiplier applied after the texture sample, with `desaturate` (0..1) first fading the sample
+ * toward its own brightness (0 keeps its hue, 1 colours its light and dark with the RGB alone). `NO_TINT` leaves a
+ * sprite untouched.
+ */
+export type Tint = readonly [r: number, g: number, b: number, desaturate: number];
+export const NO_TINT: Tint = [1, 1, 1, 0];
+
 export type TextureObject = {
   texture: WebGLTexture;
   width: number;
@@ -131,6 +139,7 @@ export class Renderer {
   private spriteFrameCoordUniformLocation: WebGLUniformLocation | null;
   private spriteFlipHorizontalUniformLocation: WebGLUniformLocation | null;
   private spriteAlphaUniformLocation: WebGLUniformLocation | null;
+  private spriteTintUniformLocation: WebGLUniformLocation | null;
   private spriteProjectionMatrixUniformLocation: WebGLUniformLocation | null;
   private backgroundProgram: WebGLProgram;
   private backgroundPositionAttributeLocation: number;
@@ -197,6 +206,7 @@ export class Renderer {
     this.spriteFlipHorizontalUniformLocation = this.gl.getUniformLocation(this.spriteProgram, 'u_flip_horizontal');
     this.spriteProjectionMatrixUniformLocation = this.gl.getUniformLocation(this.spriteProgram, 'u_projection');
     this.spriteAlphaUniformLocation = this.gl.getUniformLocation(this.spriteProgram, 'u_alpha');
+    this.spriteTintUniformLocation = this.gl.getUniformLocation(this.spriteProgram, 'u_tint');
     const bgVertexShader = this.compileShader(this.gl.VERTEX_SHADER, bgVsSource);
     const bgFragmentShader = this.compileShader(this.gl.FRAGMENT_SHADER, bgFsSource);
     this.backgroundProgram = this.createProgram(bgVertexShader, bgFragmentShader);
@@ -222,9 +232,10 @@ export class Renderer {
       halo: this.createSolidTexture([0, 0, 0, 230]),
       snap: this.createSolidTexture([255, 0, 220, 255]),
     };
-    // u_alpha has no GLSL default (it would read as 0), so initialise it once up front.
+    // u_alpha and u_tint have no GLSL default (they would read as 0 and draw nothing / black), so initialise them once up front.
     this.useSpriteProgram();
     this.gl.uniform1f(this.spriteAlphaUniformLocation, 1.0);
+    this.setSpriteTint(NO_TINT);
     this.updateViewport();
   }
 
@@ -252,6 +263,11 @@ export class Renderer {
     // Uniforms persist per program, so uploading here covers every later draw.
     this.useSpriteProgram();
     this.gl.uniformMatrix4fv(this.spriteProjectionMatrixUniformLocation, false, this.projection);
+  }
+
+  /** Uniforms persist per program, so a tint stays on for every later sprite until it is set back to `NO_TINT`. */
+  private setSpriteTint(tint: Tint) {
+    this.gl.uniform4f(this.spriteTintUniformLocation, tint[0], tint[1], tint[2], tint[3]);
   }
 
   /** Show or hide the red player / green platform collision boxes (off by default). */
@@ -548,7 +564,7 @@ export class Renderer {
     platformVisualFlags: boolean[] = [],
     playerAnim: PlayerAnimation | null,
     goals: Platform[] = [],
-    character: number = 0,
+    playerTint: Tint = NO_TINT,
     authoring: AuthoringOverlay | null = null,
     cullDebug: boolean = false
   ) {
@@ -632,11 +648,11 @@ export class Renderer {
       const animData = animationForState(playerAnim.state);
       const frame = playerAnim.frame % animData.frames;
       const frameCoord = { x: frame * animData.frameSize.x, y: animData.row * animData.frameSize.y };
-      // pass visualYOffset so sprite is nudged down to sit on platform
+      // pass visualYOffset so sprite is nudged down to sit on platform. The tint is for the player only: it is
+      // set just for this draw and put back so platforms, decor, goals and particles stay untinted.
+      this.setSpriteTint(playerTint);
       this.drawSprite(playerPosition, playerSize, playerTexture, { x: playerTexture.width, y: playerTexture.height }, animData.frameSize, frameCoord, playerAnim.facingLeft, visualYOffset);
-
-      // `character` (0=Bolts, 1=Volts) is accepted but not used for presentation yet: both characters
-      // share one spritesheet and differ only in mechanics (speed/jump) until character presentation lands.
+      this.setSpriteTint(NO_TINT);
 
       if (this.collisionDebug && this.debugRedTexture) {
         this.drawSprite({ x: playerPosition.x, y: playerPosition.y }, { x: playerSize.x, y: playerSize.y }, this.debugRedTexture, { x: 1, y: 1 }, { x: 1, y: 1 }, { x: 0, y: 0 }, false);
