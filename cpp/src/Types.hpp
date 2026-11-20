@@ -84,6 +84,8 @@ namespace CharacterStats {
     constexpr float BOLTS_JUMP_STRENGTH = 6.2f;
     constexpr float BOLTS_GROUND_POUND_SPEED = -12.0f;
     constexpr float BOLTS_GROUND_POUND_COOLDOWN = 0.8f;
+    constexpr float BOLTS_GROUND_POUND_DURATION = 0.4f;  // ends earlier on landing
+    constexpr float BOLTS_GROUND_POUND_KEEP_VX = 0.2f;   // share of horizontal speed kept when the pound starts
 
     // Volts: agile, tech-focused, floaty
     constexpr float VOLTS_MOVE_SPEED = 3.2f;
@@ -91,6 +93,9 @@ namespace CharacterStats {
     constexpr float VOLTS_HOVER_GRAVITY_MULT = 0.15f;
     constexpr float VOLTS_HOVER_DURATION = 1.2f;
     constexpr float VOLTS_HOVER_COOLDOWN = 2.0f;
+    constexpr float VOLTS_HOVER_KEEP_FALL = 0.3f;        // share of fall speed kept when hover starts
+
+    constexpr float SWITCH_KEEP_VX = 0.3f;               // share of horizontal speed kept on a character switch
 }
 
 #endif // TYPES_HPP

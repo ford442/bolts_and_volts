@@ -37,12 +37,13 @@ npm run lint
 # Tests
 npm run test
 npm run test:e2e
+npm run test:sim          # native C++ simulation tests (host g++/clang++; no emsdk, no browser)
 
 # Preview production build
 npm run preview
 ```
 
-**Prerequisite:** Emscripten (`emcc`) must be on `PATH` for any command that compiles WASM. The `build:wasm` script outputs `src/wasm/main.js` + `main.wasm`. The Playwright smoke test does not require `emcc` because it stubs the WASM module.
+**Prerequisite:** Emscripten (`emcc`) must be on `PATH` for any command that compiles WASM. The `build:wasm` script outputs `src/wasm/main.js` + `main.wasm`. The Playwright smoke test does not require `emcc` because it stubs the WASM module. `npm run test:sim` needs only a host C++17 compiler (`scripts/test-sim.sh`, output in `build/native/`).
 
 ## Architecture
 
@@ -61,11 +62,16 @@ C++ (Game logic) → Emscripten → src/wasm/main.js + main.wasm
 Layering: C++ owns physics, collision, abilities, camera, goals and particle simulation. `src/gl` owns GL only. `src/game/loop.ts` owns the per-frame work and never touches React state. React re-renders only on level change, volume, hotkey toggles and level complete — per-frame HUD text is written to DOM refs.
 
 ### C++ side (`cpp/src/`)
-- `Game.cpp / Game.hpp` — all game state: player physics, collision, camera, particle system, sound callbacks, level loading. Exposed to JS via Emscripten `embind`.
-- `ParticleSystem.hpp` — particle emission/update logic.
-- `Types.hpp` — shared structs (`Vec2`, `Platform`, `InputState`, `AnimationState`, `PlayerState`) and `FrameLayout`, the float layout of the per-frame snapshot.
+- `sim/Simulation.hpp / .cpp` — the deterministic platformer core: player body, platforms, goals, character + ability, camera follow, animation state. **No emscripten include, no RNG, no JSON** — it takes an already-parsed `LevelSpec`. Built into the WASM and, on its own, into the native tests.
+- `sim/SimEvent.hpp` — what a sim call produced (`Jumped`, `Landed`, `PoundStarted`, `PoundImpact`, `HoverStarted`, `HoverTick`, `Running`, `CharacterSwitched`, `GoalReached`), drained with `drainEvents`. The sim never reads them back.
+- `Game.cpp / Game.hpp` — the embind adapter: `loadLevel` copies `val` fields into a `LevelSpec`, `handleInput`/`update` forward to the sim, `dispatchEvents` turns events into particles, sound names (`jump`, `land`, `ground_pound`, `hover`, `switch`) and the level-complete callback, `captureFrame` packs the snapshot. Gameplay rules belong in the sim, not here.
+- `ParticleSystem.hpp` — cosmetic only, fed by sim events (`onEvent`); owns a seeded xorshift32 (`ParticleRng`). Not used by the native tests.
+- `Types.hpp` — shared structs (`Vec2`, `Platform`, `InputState`, `AnimationState`, `PlayerState`), tuning (`Physics`, `CharacterStats`) and `FrameLayout`, the float layout of the per-frame snapshot.
+- **Tick order** (`Simulation::update`): buffered/coyote jump → horizontal accel → ability and buffer timers → gravity (skipped on the takeoff tick; the tuned jump heights assume it) → vertical move + resolve, which **sets grounded** (gravity also runs while standing so the small step down re-detects the floor) → horizontal move + resolve → landing/coyote bookkeeping → animation → camera → goals. Landing events fire on the tick of contact.
+- **Collision details:** a vertical move longer than half of (player half-height + thinnest platform half-height) is split into substeps so fast falls cannot pass, or be pushed, through thin platforms (normal play is one step). Overlaps of ≤ `CONTACT_EPSILON` (1e-4) are contact, not penetration — without it, float rounding of the resting height makes the horizontal pass eject the player to a platform edge (e.g. test-1's spawn floor).
 - **Frame snapshot:** `Game::captureFrame()` packs player, camera, anim state (`PlayerState` as an int), character, ability, platforms, goals and particles into one `std::vector<float>`; `framePtr()` gives its heap address. JS views it via `HEAPF32` (exported with `-sEXPORTED_RUNTIME_METHODS=HEAPF32`). `FrameLayout` and `FRAME` in `src/game/snapshot.ts` must change together.
-- **Fixed step:** `Game::update` is called with exactly 1/60 s by the TS loop (up to 4 ticks per rendered frame, then backlog is dropped). Its 33 ms clamp is only a guard.
+- **Fixed step:** `Game::update` is called with exactly 1/60 s by the TS loop (up to 4 ticks per rendered frame, then backlog is dropped). Its 33 ms clamp (`Simulation::MAX_STEP`) is only a guard.
+- **Native tests:** `tests/native/sim_tests.cpp` (doctest, vendored at `tests/native/third_party/doctest/`) drives `Simulation` tick by tick (`handleInput` then `update(1/60)`). Built with `-ffp-contract=off` (wasm has no FMA), so native positions match the WASM build bit for bit (checked on walk/jump/pound/hover traces, 2026-11-20). Add a case there with any change to movement, collision or abilities.
 - The WASM module is exported as an ES6 factory called `createWasmModule`. The legacy `game.js` / `window.createGameModule` loader paths were removed.
 
 ### TypeScript/React side (`src/`)
@@ -111,6 +117,6 @@ World units are used throughout (not pixels). The viewport shows 10 world-units 
 
 ## Known Issues / Blockers (2026-09-07)
 
-- **CI added (2026-11-19).** `.github/workflows/ci.yml` runs release WASM build, lint, `tsc -b`, unit and e2e tests on push/PR to `main` (emsdk pinned to 3.1.61). Not yet confirmed green on GitHub — check the first PR run. emcc flags live in `cpp/emscripten-*.response` (see `cpp/README.md`).
+- **CI added (2026-11-19).** `.github/workflows/ci.yml` runs native sim tests (`npm run test:sim`, before emsdk is installed), release WASM build, lint, `tsc -b`, unit and e2e tests on push/PR to `main` (emsdk pinned to 3.1.61). Not yet confirmed green on GitHub — check the first PR run. emcc flags live in `cpp/emscripten-*.response` (see `cpp/README.md`).
 - **This file had drifted.** As of this audit it hadn't been updated in ~78 days despite ongoing commits, and `AGENTS.md`'s "Known Issues" list had three already-fixed items still listed as open (a `Game.cpp` compile error, a duplicate `App.tsx`, a hardcoded SFTP credential in `deploy.py` — all fixed). Fixed here and in `AGENTS.md`; worth rechecking both periodically against the actual code.
 - **`decor` / `backgroundLayers` level fields aren't documented above.** `public/levels/demo-decor.json` (listed in `public/levels/manifest.json`, selectable in the level dropdown) uses `"decor"` and `"backgroundLayers"` arrays, fully handled client-side by `extractDecorConfigs` / `extractBackgroundLayerConfigs` in `src/lib/levelData.ts` and drawn by `drawBackgroundLayer` in `src/gl/renderer.ts` — but the "Level format" section above only documents `spawn`/`bounds`/`platforms`/`goals`/`camera`. These fields never reach `Game::loadLevel` in C++; they're TS-only. `docs/plans/PLAN.md` §1 lists documenting this schema as a not-started roadmap item.

@@ -22,6 +22,10 @@ jobs:
           node-version: 22
           cache: npm
 
+      # Host g++ only (tests/native + cpp/src/sim); runs before emsdk is installed on purpose.
+      - name: Simulation tests (native)
+        run: npm run test:sim
+
       # Keep in sync with the emsdk version used locally (emcc --version).
       - uses: mymindstorm/setup-emsdk@v14
         with:

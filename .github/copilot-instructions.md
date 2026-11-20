@@ -21,6 +21,7 @@ This document provides essential context for AI assistants working on the Bolts 
 - `npm run lint` — Run ESLint with the root flat config (`eslint.config.js`); fails on warnings
 - `npm run test` — Run Vitest unit tests
 - `npm run test:e2e` — Run the Playwright smoke test (stubs WASM; no `emcc` required)
+- `npm run test:sim` — Build and run the native C++ simulation tests (`tests/native`; host g++/clang++, no `emcc`)
 
 **Prerequisites:** Emscripten SDK must be installed and `emsdk` environment variables configured.
 
@@ -31,7 +32,7 @@ Bolts & Volts is a 2D platformer combining C++ game logic with a React/WebGL2 fr
 ### Core Components
 
 1. **Game Logic (C++/WASM)**
-   - Location: `cpp/src/` (Game.cpp, ParticleSystem.hpp, etc.)
+   - Location: `cpp/src/` — gameplay rules in `sim/Simulation.cpp` (no emscripten; tested natively), embind adapter in `Game.cpp`, cosmetic particles in `ParticleSystem.hpp`
    - Compiled via Emscripten to `src/wasm/main.js`
    - Exported functions: `update()`, `handleInput()`, `captureFrame()` + `framePtr()` (one float snapshot per frame, read via `HEAPF32`), `getPlayerPosition()`
    - Uses callbacks (`setSoundCallback`, `setLevelCompleteCallback`) for JavaScript interop

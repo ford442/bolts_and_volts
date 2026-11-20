@@ -6,7 +6,7 @@ Verified against the loaders as of this writing:
 - `src/lib/levelData.ts` — `normalizeLevelData`, `extractBackgroundLayerConfigs`, `extractDecorConfigs`
 - `src/game/levelAssets.ts` — `loadBackgroundLayers`, `loadDecorLayers`
 - `src/lib/levelManifest.ts` — `normalizeLevelManifest`
-- `cpp/src/Game.cpp` — `Game::loadLevel`
+- `cpp/src/Game.cpp` — `Game::loadLevel` (copies the fields into a `LevelSpec` for `Simulation::loadLevel`, `cpp/src/sim/`)
 
 ## How a level is loaded
 
