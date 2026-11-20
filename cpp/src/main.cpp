@@ -1,17 +1,10 @@
 #include "Game.hpp"
-#include "ParticleSystem.hpp"
 #include <emscripten/bind.h>
 
 EMSCRIPTEN_BINDINGS(WASM_Venture) {
     emscripten::value_object<Vec2>("Vec2")
         .field("x", &Vec2::x)
         .field("y", &Vec2::y);
-        
-    emscripten::value_object<Platform>("Platform")
-        .field("position", &Platform::position)
-        .field("size", &Platform::size);
-
-    emscripten::register_vector<Platform>("PlatformList");
 
     emscripten::value_object<InputState>("InputState")
         .field("left", &InputState::left)
@@ -19,32 +12,16 @@ EMSCRIPTEN_BINDINGS(WASM_Venture) {
         .field("jump", &InputState::jump)
         .field("abilityKey", &InputState::abilityKey);
 
-    emscripten::value_object<AnimationState>("AnimationState")
-        .field("currentState", &AnimationState::currentState)
-        .field("currentFrame", &AnimationState::currentFrame)
-        .field("facingLeft", &AnimationState::facingLeft);
-
-    emscripten::value_object<Particle>("Particle")
-        .field("position", &Particle::position)
-        .field("velocity", &Particle::velocity)
-        .field("life", &Particle::life)
-        .field("maxLife", &Particle::maxLife)
-        .field("size", &Particle::size)
-        .field("rotation", &Particle::rotation)
-        .field("angularVelocity", &Particle::angularVelocity);
-
-    emscripten::register_vector<Particle>("ParticleList");
-
+    // Per-frame render state crosses the boundary as one float buffer (captureFrame + framePtr,
+    // read through HEAPF32), not as embind objects. Layout: FrameLayout in Types.hpp.
     emscripten::class_<Game>("Game")
         .constructor<>()
         .function("update", &Game::update)
         .function("handleInput", &Game::handleInput)
+        .function("captureFrame", &Game::captureFrame)
+        .function("framePtr", &Game::framePtr)
         .function("getPlayerPosition", &Game::getPlayerPosition)
         .function("getCameraPosition", &Game::getCameraPosition)
-        .function("getPlatforms", &Game::getPlatforms)
-        .function("getGoals", &Game::getGoals)
-        .function("getParticles", &Game::getParticles)
-        .function("getPlayerAnimationState", &Game::getPlayerAnimationState)
         .function("getPlayerSize", &Game::getPlayerSize)
         .function("getLevelName", &Game::getLevelName)
         .function("getLevelDescription", &Game::getLevelDescription)

@@ -3,6 +3,7 @@
 
 #include <vector>
 #include <string>
+#include <cstdint>
 #include <emscripten/val.h>
 #include "Types.hpp"
 #include "ParticleSystem.hpp"
@@ -19,12 +20,13 @@ public:
     Vec2 getPlayerPosition() const;
     Vec2 getPlayerSize() const;
     Vec2 getCameraPosition() const;
-    const std::vector<Platform>& getPlatforms() const;
-    const std::vector<Platform>& getGoals() const;
-    const std::vector<Particle>& getParticles() const;
-    AnimationState getPlayerAnimationState() const;
     std::string getLevelName() const;
     std::string getLevelDescription() const;
+
+    // Pack this frame's render state into `frameBuffer` (layout: FrameLayout in Types.hpp) and return
+    // its length in floats. framePtr() is its byte address in the wasm heap; valid until the next call.
+    int captureFrame();
+    uintptr_t framePtr() const;
 
     // === Two-character (Bolts & Volts) API ===
     float getMoveSpeed() const;
@@ -76,6 +78,7 @@ private:
     Vec2 levelMax{ 1e6f, 1e6f };
     bool hasLevelBounds = false;
     ParticleSystem particleSystem;
+    std::vector<float> frameBuffer;
 
     // Two-character system
     CharacterType currentCharacter = CharacterType::Bolts;

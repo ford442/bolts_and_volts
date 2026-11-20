@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <emscripten/val.h>
 #include <cstdlib> // For rand()
+#include <initializer_list>
 
 
 Game::Game() {
@@ -12,7 +13,7 @@ Game::Game() {
     cameraPosition = {0.0f, 0.0f};
     cameraTargetX = 0.0f;
     cameraTargetY = 0.0f;
-    playerAnimation = {"idle", 0, false};
+    playerAnimation = {PlayerState::Idle, 0, false};
     isGrounded = false;
     wasGrounded = false;
     canJump = true;
@@ -342,7 +343,8 @@ void Game::useAbility() {
 
 
 void Game::update(float deltaTime) {
-    // Safety clamp: prevent tunneling on lag/tab-switch
+    // The JS loop calls this with a fixed 1/60 step (src/game/loop.ts). This clamp is only a guard
+    // against a caller passing wall-clock time; it should never trigger.
     if (deltaTime > 0.033f) deltaTime = 0.033f;
 
     // Apply acceleration-based movement with real deltaTime
@@ -482,17 +484,9 @@ void Game::update(float deltaTime) {
         currentPlayerState = PlayerState::Idle;
     }
 
-    // Map State to String for JS
-    std::string newStateString = "idle";
-    switch (currentPlayerState) {
-        case PlayerState::Idle: newStateString = "idle"; break;
-        case PlayerState::Run: newStateString = "run"; break;
-        case PlayerState::Jump: newStateString = "jump"; break;
-        case PlayerState::Fall: newStateString = "jump"; break; // Re-use jump animation for now
-    }
-
-    if (newStateString != playerAnimation.currentState) {
-        playerAnimation.currentState = newStateString;
+    // Fall may share the jump row; that mapping lives in the renderer.
+    if (currentPlayerState != playerAnimation.currentState) {
+        playerAnimation.currentState = currentPlayerState;
         playerAnimation.currentFrame = 0;
         animationTimer = 0.0f;
     }
@@ -561,19 +555,61 @@ Vec2 Game::getPlayerPosition() const { return playerPosition; }
 
 Vec2 Game::getPlayerSize() const { return playerSize; }
 
-const std::vector<Platform>& Game::getPlatforms() const { return platforms; }
-
-const std::vector<Platform>& Game::getGoals() const { return goals; }
-
 Vec2 Game::getCameraPosition() const { return cameraPosition; }
-
-AnimationState Game::getPlayerAnimationState() const { return playerAnimation; }
-
-const std::vector<Particle>& Game::getParticles() const { return particleSystem.getParticles(); }
 
 std::string Game::getLevelName() const { return levelName; }
 
 std::string Game::getLevelDescription() const { return levelDescription; }
+
+int Game::captureFrame() {
+    using namespace FrameLayout;
+    const std::vector<Particle>& particles = particleSystem.getParticles();
+    const size_t length = HEADER_SIZE
+        + (platforms.size() + goals.size()) * BOX_STRIDE
+        + particles.size() * PARTICLE_STRIDE;
+    frameBuffer.resize(length);
+    float* out = frameBuffer.data();
+
+    out[PLAYER_X] = playerPosition.x;
+    out[PLAYER_Y] = playerPosition.y;
+    out[PLAYER_W] = playerSize.x;
+    out[PLAYER_H] = playerSize.y;
+    out[CAMERA_X] = cameraPosition.x;
+    out[CAMERA_Y] = cameraPosition.y;
+    out[ANIM_STATE] = static_cast<float>(static_cast<int>(playerAnimation.currentState));
+    out[ANIM_FRAME] = static_cast<float>(playerAnimation.currentFrame);
+    out[FACING_LEFT] = playerAnimation.facingLeft ? 1.0f : 0.0f;
+    out[CHARACTER] = static_cast<float>(getCurrentCharacter());
+    out[ABILITY_STATE] = static_cast<float>(getAbilityState());
+    out[ABILITY_COOLDOWN] = getAbilityCooldownPercent();
+    out[PLATFORM_COUNT] = static_cast<float>(platforms.size());
+    out[GOAL_COUNT] = static_cast<float>(goals.size());
+    out[PARTICLE_COUNT] = static_cast<float>(particles.size());
+    out[15] = 0.0f;
+
+    float* cursor = out + HEADER_SIZE;
+    for (const std::vector<Platform>* boxes : { &platforms, &goals }) {
+        for (const Platform& b : *boxes) {
+            cursor[0] = b.position.x;
+            cursor[1] = b.position.y;
+            cursor[2] = b.size.x;
+            cursor[3] = b.size.y;
+            cursor += BOX_STRIDE;
+        }
+    }
+    for (const Particle& p : particles) {
+        cursor[0] = p.position.x;
+        cursor[1] = p.position.y;
+        cursor[2] = p.size;
+        cursor[3] = p.maxLife > 0.0f ? p.life / p.maxLife : 0.0f;
+        cursor += PARTICLE_STRIDE;
+    }
+    return static_cast<int>(length);
+}
+
+uintptr_t Game::framePtr() const {
+    return reinterpret_cast<uintptr_t>(frameBuffer.data());
+}
 
 // === Bolts & Volts character system ===
 

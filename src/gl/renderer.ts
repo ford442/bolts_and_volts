@@ -1,4 +1,5 @@
-import type { Vec2, Platform, AnimationState, Particle } from '../wasm/loader';
+import type { Vec2, Platform } from '../wasm/loader';
+import { AnimState, type ParticleView, type PlayerAnimation } from '../game/snapshot';
 import { VIEW_WORLD_WIDTH, gridLineIndices, type AuthoringOverlay } from '../lib/authoring';
 import type { CanvasSize } from '../lib/canvasSize';
 import {
@@ -103,6 +104,16 @@ const animationMap = {
   idle: { row: 0, frames: 2, frameSize: { x: 64, y: 64 } },
   run: { row: 1, frames: 4, frameSize: { x: 64, y: 64 } },
   jump: { row: 2, frames: 1, frameSize: { x: 64, y: 64 } },
+};
+
+/** Spritesheet row for a simulation `AnimState`. Fall reuses the jump row until it gets its own art. */
+const animationForState = (state: number) => {
+  switch (state) {
+    case AnimState.Run: return animationMap.run;
+    case AnimState.Jump:
+    case AnimState.Fall: return animationMap.jump;
+    default: return animationMap.idle;
+  }
 };
 
 
@@ -529,13 +540,13 @@ export class Renderer {
     playerPosition: Vec2,
     playerSize: Vec2,
     platforms: Platform[],
-    particles: Particle[],
+    particles: ParticleView[],
     playerTexture: TextureObject | null,
     platformTexture: TextureObject | null,
     backgroundLayers: BackgroundLayer[] = [],
     decorLayers: DecorLayers = { distant: [], mid: [], foreground: [] },
     platformVisualFlags: boolean[] = [],
-    playerAnim: AnimationState | null,
+    playerAnim: PlayerAnimation | null,
     goals: Platform[] = [],
     character: number = 0,
     authoring: AuthoringOverlay | null = null,
@@ -618,8 +629,8 @@ export class Renderer {
     if (dimmed) this.gl.uniform1f(this.spriteAlphaUniformLocation, AUTHORING_DIM_ALPHA);
 
     if (playerTexture && playerAnim) {
-      const animData = animationMap[playerAnim.currentState as keyof typeof animationMap] || animationMap.idle;
-      const frame = playerAnim.currentFrame % animData.frames;
+      const animData = animationForState(playerAnim.state);
+      const frame = playerAnim.frame % animData.frames;
       const frameCoord = { x: frame * animData.frameSize.x, y: animData.row * animData.frameSize.y };
       // pass visualYOffset so sprite is nudged down to sit on platform
       this.drawSprite(playerPosition, playerSize, playerTexture, { x: playerTexture.width, y: playerTexture.height }, animData.frameSize, frameCoord, playerAnim.facingLeft, visualYOffset);
