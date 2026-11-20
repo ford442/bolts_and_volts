@@ -1,47 +1,71 @@
 #include "Game.hpp"
-#include <cmath>
 #include <algorithm>
-#include <emscripten/val.h>
-#include <cstdlib> // For rand()
 #include <initializer_list>
+
+using emscripten::val;
+
+namespace {
+
+bool hasField(const val& object, const char* key) {
+    return !object.isNull() && !object.isUndefined() && object.hasOwnProperty(key);
+}
+
+bool readVec2(const val& object, Vec2& out) {
+    if (!hasField(object, "x") || !hasField(object, "y")) return false;
+    out = { object["x"].as<float>(), object["y"].as<float>() };
+    return true;
+}
+
+// `[{ position: {x, y}, size: {x, y} }, ...]`; entries missing either vector are skipped.
+void readBoxes(const val& list, std::vector<Platform>& out) {
+    if (list.isNull() || list.isUndefined()) return;
+    const unsigned length = list["length"].as<unsigned>();
+    for (unsigned i = 0; i < length; ++i) {
+        const val entry = list[i];
+        Platform box{};
+        if (hasField(entry, "position") && hasField(entry, "size") &&
+            readVec2(entry["position"], box.position) && readVec2(entry["size"], box.size)) {
+            out.push_back(box);
+        }
+    }
+}
+
+std::string readString(const val& object, const char* key, const char* fallback) {
+    if (hasField(object, key)) {
+        const val value = object[key];
+        if (!value.isNull() && !value.isUndefined()) return value.as<std::string>();
+    }
+    return fallback;
+}
+
+// Shown until the first level JSON loads.
+LevelSpec defaultLevel() {
+    LevelSpec level;
+    level.spawn = Vec2{0.0f, -1.5f};
+    level.platforms = {
+        { {-12.25f, -2.0f}, {110.0f, 0.2f} },
+        { {0.0f, -0.8f}, {2.0f, 0.2f} },
+        { {2.0f, -0.6f}, {1.0f, 0.2f} },
+        { {4.0f, -0.4f}, {1.0f, 0.2f} },
+        { {6.0f, -0.2f}, {1.5f, 0.2f} },
+        { {8.0f, 0.2f}, {1.0f, 0.2f} },
+        { {10.0f, 0.6f}, {1.0f, 0.2f} },
+    };
+    return level;
+}
+
+} // namespace
 
 
 Game::Game() {
-    playerPosition = {0.0f, -1.5f};
-    playerVelocity = {0.0f, 0.0f};
-    playerSize = {0.5f, 0.8f};
-    cameraPosition = {0.0f, 0.0f};
-    cameraTargetX = 0.0f;
-    cameraTargetY = 0.0f;
-    playerAnimation = {PlayerState::Idle, 0, false};
-    isGrounded = false;
-    wasGrounded = false;
-    canJump = true;
-    coyoteTimer = 0.0f;
-    jumpBufferTimer = 0.0f;
-    jumpHeld = false;
-    jumpBuffered = false;
-    targetMoveVelocity = 0.0f;
-    soundCallback = emscripten::val::null();
-    levelCompleteCallback = emscripten::val::null();
-    levelName = "test-1";
-    levelDescription = "";
-
-    // Default ground/platforms (fallback if no level JSON loaded)
-    platforms.push_back({ {-12.25f, -2.0f}, {110.0f, 0.2f} });
-    platforms.push_back({ {0.0f, -0.8f}, {2.0f, 0.2f} });
-    platforms.push_back({ {2.0f, -0.6f}, {1.0f, 0.2f} });
-    platforms.push_back({ {4.0f, -0.4f}, {1.0f, 0.2f} });
-    platforms.push_back({ {6.0f, -0.2f}, {1.5f, 0.2f} });
-    platforms.push_back({ {8.0f, 0.2f}, {1.0f, 0.2f} });
-    platforms.push_back({ {10.0f, 0.6f}, {1.0f, 0.2f} });
+    sim.loadLevel(defaultLevel());
 }
 
-void Game::setSoundCallback(emscripten::val callback) {
+void Game::setSoundCallback(val callback) {
     soundCallback = callback;
 }
 
-void Game::setLevelCompleteCallback(emscripten::val callback) {
+void Game::setLevelCompleteCallback(val callback) {
     levelCompleteCallback = callback;
 }
 
@@ -51,511 +75,91 @@ void Game::playSound(const std::string& soundName) {
     }
 }
 
-void Game::loadLevel(const emscripten::val& level) {
+void Game::loadLevel(const val& level) {
     if (level.isNull() || level.isUndefined()) return;
-    platforms.clear();
-    goals.clear();
-    goalTriggered.clear();
-    hasLevelBounds = false;
-    cameraFollowY = false;
-    cameraVerticalDeadzone = 0.75f;
-    cameraLookAheadY = 0.8f;
 
-    // Reset ability state on level load
-    abilityState = AbilityState::Ready;
-    abilityCooldownTimer = 0.0f;
-    abilityActiveTimer = 0.0f;
-    levelName = "untitled-level";
-    levelDescription = "";
+    LevelSpec spec;
+    Vec2 spawn{};
+    if (hasField(level, "spawn") && readVec2(level["spawn"], spawn)) spec.spawn = spawn;
+    if (hasField(level, "platforms")) readBoxes(level["platforms"], spec.platforms);
+    if (hasField(level, "goals")) readBoxes(level["goals"], spec.goals);
 
-    if (level.hasOwnProperty("name")) {
-        emscripten::val nameVal = level["name"];
-        if (!nameVal.isNull() && !nameVal.isUndefined()) {
-            levelName = nameVal.as<std::string>();
-        }
-    }
-    if (level.hasOwnProperty("description")) {
-        emscripten::val descriptionVal = level["description"];
-        if (!descriptionVal.isNull() && !descriptionVal.isUndefined()) {
-            levelDescription = descriptionVal.as<std::string>();
-        }
-    }
-
-    // spawn
-    if (level.hasOwnProperty("spawn")) {
-        emscripten::val spawn = level["spawn"];
-        if (!spawn.isNull() && !spawn.isUndefined() && spawn.hasOwnProperty("x") && spawn.hasOwnProperty("y")) {
-            playerPosition.x = spawn["x"].as<float>();
-            playerPosition.y = spawn["y"].as<float>();
-            playerVelocity = {0.0f, 0.0f};
-        }
-    }
-
-    // platforms
-    if (level.hasOwnProperty("platforms")) {
-        emscripten::val jsPlatforms = level["platforms"];
-        const unsigned length = jsPlatforms["length"].as<unsigned>();
-        for (unsigned i = 0; i < length; ++i) {
-            emscripten::val jsPlatform = jsPlatforms[i];
-            if (jsPlatform.hasOwnProperty("position") && jsPlatform.hasOwnProperty("size")) {
-                emscripten::val jsPosition = jsPlatform["position"];
-                emscripten::val jsSize = jsPlatform["size"];
-                if (jsPosition.hasOwnProperty("x") && jsPosition.hasOwnProperty("y") &&
-                    jsSize.hasOwnProperty("x") && jsSize.hasOwnProperty("y")) {
-                    Vec2 position = { jsPosition["x"].as<float>(), jsPosition["y"].as<float>() };
-                    Vec2 size = { jsSize["x"].as<float>(), jsSize["y"].as<float>() };
-                    platforms.push_back({ position, size });
-                }
-            }
-        }
-    }
-
-    // goals (optional)
-    if (level.hasOwnProperty("goals")) {
-        emscripten::val jsGoals = level["goals"];
-        const unsigned gLen = jsGoals["length"].as<unsigned>();
-        for (unsigned i = 0; i < gLen; ++i) {
-            emscripten::val jsGoal = jsGoals[i];
-            if (jsGoal.hasOwnProperty("position") && jsGoal.hasOwnProperty("size")) {
-                emscripten::val jsPosition = jsGoal["position"];
-                emscripten::val jsSize = jsGoal["size"];
-                if (jsPosition.hasOwnProperty("x") && jsPosition.hasOwnProperty("y") &&
-                    jsSize.hasOwnProperty("x") && jsSize.hasOwnProperty("y")) {
-                    Vec2 position = { jsPosition["x"].as<float>(), jsPosition["y"].as<float>() };
-                    Vec2 size = { jsSize["x"].as<float>(), jsSize["y"].as<float>() };
-                    goals.push_back({ position, size });
-                    goalTriggered.push_back(false);
-                }
-            }
-        }
-    }
-
-    // Camera bounds
-    if (level.hasOwnProperty("bounds")) {
-        emscripten::val bounds = level["bounds"];
-        if (bounds.hasOwnProperty("min") && bounds.hasOwnProperty("max")) {
-            emscripten::val min = bounds["min"];
-            emscripten::val max = bounds["max"];
-            if (min.hasOwnProperty("x") && min.hasOwnProperty("y") &&
-                max.hasOwnProperty("x") && max.hasOwnProperty("y")) {
-                levelMin = { min["x"].as<float>(), min["y"].as<float>() };
-                levelMax = { max["x"].as<float>(), max["y"].as<float>() };
-                hasLevelBounds = true;
-            }
+    if (hasField(level, "bounds")) {
+        const val bounds = level["bounds"];
+        LevelBounds parsed{};
+        if (hasField(bounds, "min") && hasField(bounds, "max") &&
+            readVec2(bounds["min"], parsed.min) && readVec2(bounds["max"], parsed.max)) {
+            spec.bounds = parsed;
         }
     }
 
     // Optional camera tuning (backward compatible: default is X-only follow)
-    if (level.hasOwnProperty("camera")) {
-        emscripten::val camera = level["camera"];
-        if (!camera.isNull() && !camera.isUndefined()) {
-            if (camera.hasOwnProperty("followY")) {
-                cameraFollowY = camera["followY"].as<bool>();
-            }
-            if (camera.hasOwnProperty("verticalDeadzone")) {
-                cameraVerticalDeadzone = std::max(0.0f, camera["verticalDeadzone"].as<float>());
-            }
-            if (camera.hasOwnProperty("lookAheadY")) {
-                cameraLookAheadY = camera["lookAheadY"].as<float>();
-            }
-        }
+    if (hasField(level, "camera")) {
+        const val camera = level["camera"];
+        if (hasField(camera, "followY")) spec.camera.followY = camera["followY"].as<bool>();
+        if (hasField(camera, "verticalDeadzone")) spec.camera.verticalDeadzone = camera["verticalDeadzone"].as<float>();
+        if (hasField(camera, "lookAheadY")) spec.camera.lookAheadY = camera["lookAheadY"].as<float>();
     }
 
-    // Set camera to player on load (instant, no lerp)
-    cameraPosition.x = playerPosition.x;
-    cameraTargetX = playerPosition.x;
-    if (cameraFollowY) {
-        cameraPosition.y = playerPosition.y;
-        cameraTargetY = playerPosition.y;
-    } else {
-        cameraPosition.y = 0.0f;
-        cameraTargetY = 0.0f;
-    }
-
-    if (hasLevelBounds) {
-        if (cameraPosition.x < levelMin.x) cameraPosition.x = levelMin.x;
-        if (cameraPosition.x > levelMax.x) cameraPosition.x = levelMax.x;
-        if (cameraPosition.y < levelMin.y) cameraPosition.y = levelMin.y;
-        if (cameraPosition.y > levelMax.y) cameraPosition.y = levelMax.y;
-    }
+    levelName = readString(level, "name", "untitled-level");
+    levelDescription = readString(level, "description", "");
+    sim.loadLevel(spec);
 }
-
-
-void Game::applyMovementPhysics(float deltaTime, float targetVelX) {
-    const float maxSpeed = getMoveSpeed();
-    const float accel = isGrounded ? Physics::GROUND_ACCEL : Physics::AIR_ACCEL;
-    const float decel = isGrounded ? Physics::GROUND_DECEL : Physics::AIR_DECEL;
-
-    if (std::abs(targetVelX) > 0.01f) {
-        // Accelerate toward target
-        float diff = targetVelX - playerVelocity.x;
-        float change = accel * deltaTime;
-        if (std::abs(diff) < change) {
-            playerVelocity.x = targetVelX;
-        } else {
-            playerVelocity.x += (diff > 0 ? change : -change);
-        }
-        // Clamp to max speed
-        playerVelocity.x = std::max(-maxSpeed, std::min(maxSpeed, playerVelocity.x));
-    } else {
-        // Decelerate to stop
-        float change = decel * deltaTime;
-        if (std::abs(playerVelocity.x) < change) {
-            playerVelocity.x = 0.0f;
-        } else {
-            playerVelocity.x -= (playerVelocity.x > 0 ? change : -change);
-        }
-    }
-}
-
 
 void Game::handleInput(const InputState& input) {
-    const float currentMoveSpeed = getMoveSpeed();
-    float targetVelX = 0.0f;
-
-    if (input.left) {
-        targetVelX = -currentMoveSpeed;
-        playerAnimation.facingLeft = true;
-    } else if (input.right) {
-        targetVelX = currentMoveSpeed;
-        playerAnimation.facingLeft = false;
-    }
-
-    // Store target velocity; actual acceleration is applied in update() with real deltaTime
-    this->targetMoveVelocity = targetVelX;
-
-    // Jump input buffering: if jump is pressed, buffer it for a short window
-    if (input.jump && !jumpHeld) {
-        jumpBuffered = true;
-        jumpBufferTimer = Physics::JUMP_BUFFER_TIME;
-    }
-
-    // Jump logic (with coyote time + jump buffer + variable height via cut on release)
-    const bool canCoyoteJump = (isGrounded || coyoteTimer > 0.0f);
-    if (jumpBuffered && canCoyoteJump && canJump) {
-        playerVelocity.y = getJumpStrength();
-        isGrounded = false;
-        canJump = false;
-        coyoteTimer = 0.0f;
-        jumpBuffered = false;
-        jumpBufferTimer = 0.0f;
-        currentPlayerState = PlayerState::Jump;
-        playSound("jump");
-
-        // Emit jump particles
-        for (int i = 0; i < 10; ++i) {
-            float angle = (rand() % 100 / 100.0f) * 3.14159f;
-            float speed = 1.0f + (rand() % 100 / 100.0f) * 2.0f;
-            Vec2 vel = { std::cos(angle) * speed * 0.5f, std::sin(angle) * speed * 0.5f };
-            Vec2 pos = { playerPosition.x, playerPosition.y - playerSize.y / 2.0f };
-            particleSystem.emit(pos, vel, 0.5f, 0.1f, (rand() % 100 - 50) * 0.1f);
-        }
-    }
-
-    // Track jump button state for variable jump height (cut on release)
-    if (input.jump) {
-        jumpHeld = true;
-    } else {
-        if (jumpHeld && playerVelocity.y > 0.0f) {
-            // Player released jump while still rising → shorter hop
-            playerVelocity.y *= Physics::JUMP_CUT_MULTIPLIER;
-        }
-        jumpHeld = false;
-        canJump = true;
-    }
-
-    // Ability activation (one-shot on press)
-    if (input.abilityKey && !abilityKeyWasPressed) {
-        useAbility();
-    }
-    abilityKeyWasPressed = input.abilityKey;
+    sim.handleInput(input);
+    dispatchEvents();
 }
-
-
-void Game::updateAbility(float deltaTime) {
-    switch (abilityState) {
-        case AbilityState::Active:
-            abilityActiveTimer -= deltaTime;
-            if (abilityActiveTimer <= 0.0f) {
-                abilityState = AbilityState::Cooldown;
-                float cooldown = (currentCharacter == CharacterType::Bolts)
-                    ? CharacterStats::BOLTS_GROUND_POUND_COOLDOWN
-                    : CharacterStats::VOLTS_HOVER_COOLDOWN;
-                abilityCooldownTimer = cooldown;
-            }
-            break;
-        case AbilityState::Cooldown:
-            abilityCooldownTimer -= deltaTime;
-            if (abilityCooldownTimer <= 0.0f) {
-                abilityState = AbilityState::Ready;
-                abilityCooldownTimer = 0.0f;
-            }
-            break;
-        case AbilityState::Ready:
-            break;
-    }
-}
-
-
-void Game::useAbility() {
-    if (abilityState != AbilityState::Ready) return;
-
-    if (currentCharacter == CharacterType::Bolts) {
-        // Ground Pound: slam downward quickly when airborne
-        if (!isGrounded) {
-            playerVelocity.y = CharacterStats::BOLTS_GROUND_POUND_SPEED;
-            playerVelocity.x *= 0.2f; // Kill most horizontal momentum
-            abilityState = AbilityState::Active;
-            abilityActiveTimer = 0.4f; // Short active duration (will end on landing too)
-            playSound("ground_pound");
-
-            // Slam particles
-            for (int i = 0; i < 8; ++i) {
-                float angle = (rand() % 100 / 100.0f) * 6.28f;
-                float spd = 1.5f + (rand() % 100 / 100.0f) * 1.5f;
-                Vec2 vel = { std::cos(angle) * spd * 0.3f, -std::abs(std::sin(angle) * spd) };
-                Vec2 pos = { playerPosition.x, playerPosition.y - playerSize.y * 0.4f };
-                particleSystem.emit(pos, vel, 0.4f, 0.12f, (rand() % 100 - 50) * 0.15f);
-            }
-        }
-    } else {
-        // Volts Hover: reduce gravity significantly for a duration while airborne
-        if (!isGrounded) {
-            abilityState = AbilityState::Active;
-            abilityActiveTimer = CharacterStats::VOLTS_HOVER_DURATION;
-            // Reduce downward velocity to start hover
-            if (playerVelocity.y < 0.0f) {
-                playerVelocity.y *= 0.3f;
-            }
-            playSound("hover");
-
-            // Tech particles
-            for (int i = 0; i < 6; ++i) {
-                float angle = (rand() % 100 / 100.0f) * 6.28f;
-                float spd = 0.5f + (rand() % 100 / 100.0f) * 0.8f;
-                Vec2 vel = { std::cos(angle) * spd, std::sin(angle) * spd * 0.4f - 0.5f };
-                Vec2 pos = { playerPosition.x, playerPosition.y - playerSize.y * 0.5f };
-                particleSystem.emit(pos, vel, 0.6f, 0.06f, (rand() % 100 - 50) * 0.2f);
-            }
-        }
-    }
-}
-
 
 void Game::update(float deltaTime) {
-    // The JS loop calls this with a fixed 1/60 step (src/game/loop.ts). This clamp is only a guard
-    // against a caller passing wall-clock time; it should never trigger.
-    if (deltaTime > 0.033f) deltaTime = 0.033f;
+    const float dt = std::min(deltaTime, Simulation::MAX_STEP);
+    if (!(dt > 0.0f)) return;
+    // Age existing particles before this tick's events spawn new ones.
+    particleSystem.update(dt);
+    sim.update(dt);
+    dispatchEvents();
+}
 
-    // Apply acceleration-based movement with real deltaTime
-    applyMovementPhysics(deltaTime, targetMoveVelocity);
+void Game::useAbility() {
+    sim.useAbility();
+    dispatchEvents();
+}
 
-    particleSystem.update(deltaTime);
-    updateAbility(deltaTime);
+void Game::switchCharacter() {
+    sim.switchCharacter();
+    dispatchEvents();
+}
 
-    // Decay jump buffer
-    if (jumpBufferTimer > 0.0f) {
-        jumpBufferTimer -= deltaTime;
-        if (jumpBufferTimer <= 0.0f) {
-            jumpBuffered = false;
-        }
-    }
-
-    wasGrounded = isGrounded;
-    isGrounded = false;
-    float groundCheckDistance = 0.05f;
-    Vec2 groundCheckPos = {playerPosition.x, playerPosition.y - playerSize.y / 2.0f - groundCheckDistance};
-    Vec2 groundCheckSize = {playerSize.x * 0.9f, 0.1f};
-    for (const auto& platform : platforms) {
-        if (checkCollision(groundCheckPos, groundCheckSize, platform.position, platform.size)) {
-            isGrounded = true;
-            break;
-        }
-    }
-
-    if (isGrounded && !wasGrounded) {
-        playSound("land");
-        // End ground pound active state on landing
-        if (abilityState == AbilityState::Active && currentCharacter == CharacterType::Bolts) {
-            abilityState = AbilityState::Cooldown;
-            abilityCooldownTimer = CharacterStats::BOLTS_GROUND_POUND_COOLDOWN;
-            // Impact particles on ground pound landing
-            for (int i = 0; i < 14; ++i) {
-                float angle = (rand() % 100 / 100.0f) * 3.14159f;
-                float speed = 2.0f + (rand() % 100 / 100.0f) * 3.0f;
-                Vec2 vel = { std::cos(angle) * speed, std::abs(std::sin(angle) * speed * 0.7f) };
-                Vec2 pos = { playerPosition.x, playerPosition.y - playerSize.y / 2.0f };
-                particleSystem.emit(pos, vel, 0.5f, 0.12f, (rand() % 100 - 50) * 0.12f);
-            }
-        }
-        // Normal land particles
-        for (int i = 0; i < 10; ++i) {
-            float angle = (rand() % 100 / 100.0f) * 3.14159f;
-            float speed = 1.0f + (rand() % 100 / 100.0f) * 2.0f;
-            Vec2 vel = { std::cos(angle) * speed, std::abs(std::sin(angle) * speed * 0.5f) };
-            Vec2 pos = { playerPosition.x, playerPosition.y - playerSize.y / 2.0f };
-            particleSystem.emit(pos, vel, 0.3f, 0.08f, (rand() % 100 - 50) * 0.1f);
-        }
-        coyoteTimer = Physics::COYOTE_TIME;
-    } else if (!isGrounded) {
-        if (coyoteTimer > 0.0f) {
-            coyoteTimer -= deltaTime;
-        }
-    } else {
-        coyoteTimer = Physics::COYOTE_TIME;
-        // End hover if player lands while it's active (Volts)
-        if (abilityState == AbilityState::Active && currentCharacter == CharacterType::Volts) {
-            abilityState = AbilityState::Cooldown;
-            abilityCooldownTimer = CharacterStats::VOLTS_HOVER_COOLDOWN;
-        }
-    }
-
-    // Gravity with apex hang time and ability modifications
-    if (!isGrounded) {
-        float gravityMult = 1.0f;
-
-        // Apex hang time: reduce gravity when near the peak of a jump
-        if (std::abs(playerVelocity.y) < Physics::APEX_VELOCITY_THRESHOLD) {
-            gravityMult = Physics::APEX_GRAVITY_MULT;
-        }
-
-        // Volts hover: dramatically reduce gravity while ability is active
-        if (currentCharacter == CharacterType::Volts && abilityState == AbilityState::Active) {
-            gravityMult = CharacterStats::VOLTS_HOVER_GRAVITY_MULT;
-            // Emit subtle hover particles
-            if ((rand() % 100) < 15) {
-                float angle = (rand() % 100 / 100.0f) * 6.28f;
-                Vec2 vel = { std::cos(angle) * 0.3f, -0.5f };
-                Vec2 pos = { playerPosition.x + (rand() % 100 - 50) * 0.003f, playerPosition.y - playerSize.y * 0.5f };
-                particleSystem.emit(pos, vel, 0.3f, 0.04f, (rand() % 100 - 50) * 0.1f);
-            }
-        }
-
-        playerVelocity.y += Physics::GRAVITY * gravityMult * deltaTime;
-    } else {
-        playerVelocity.y = std::max(0.0f, playerVelocity.y);
-    }
-
-    // Vertical movement + collision
-    playerPosition.y += playerVelocity.y * deltaTime;
-    for (const auto& platform : platforms) {
-        if (checkCollision(playerPosition, playerSize, platform.position, platform.size)) {
-            float playerHalfY = playerSize.y / 2.0f;
-            float platformHalfY = platform.size.y / 2.0f;
-            float deltaY = playerPosition.y - platform.position.y;
-            float penetrationY = (playerHalfY + platformHalfY) - std::abs(deltaY);
-            if (deltaY > 0) {
-                playerPosition.y += penetrationY;
-                if (playerVelocity.y < 0) playerVelocity.y = 0;
-            } else {
-                playerPosition.y -= penetrationY;
-                if (playerVelocity.y > 0) playerVelocity.y = 0;
-            }
-        }
-    }
-
-    // Horizontal movement + collision
-    playerPosition.x += playerVelocity.x * deltaTime;
-    for (const auto& platform : platforms) {
-        if (checkCollision(playerPosition, playerSize, platform.position, platform.size)) {
-            float playerHalfX = playerSize.x / 2.0f;
-            float platformHalfX = platform.size.x / 2.0f;
-            float deltaX = playerPosition.x - platform.position.x;
-            float penetrationX = (playerHalfX + platformHalfX) - std::abs(deltaX);
-            if (deltaX > 0) playerPosition.x += penetrationX;
-            else playerPosition.x -= penetrationX;
-            playerVelocity.x = 0;
-        }
-    }
-
-    // State Machine Update
-    if (!isGrounded) {
-        if (playerVelocity.y > 0) currentPlayerState = PlayerState::Jump;
-        else currentPlayerState = PlayerState::Fall;
-    } else if (std::abs(playerVelocity.x) > 0.01f) {
-        currentPlayerState = PlayerState::Run;
-        // Emit run particles occasionally
-        if ((rand() % 100) < 10) {
-             Vec2 vel = { -playerVelocity.x * 0.5f, 0.5f + (rand() % 100 / 100.0f) };
-             Vec2 pos = { playerPosition.x, playerPosition.y - playerSize.y / 2.0f };
-             particleSystem.emit(pos, vel, 0.2f, 0.05f, (rand() % 100 - 50) * 0.1f);
-        }
-    } else {
-        currentPlayerState = PlayerState::Idle;
-    }
-
-    // Fall may share the jump row; that mapping lives in the renderer.
-    if (currentPlayerState != playerAnimation.currentState) {
-        playerAnimation.currentState = currentPlayerState;
-        playerAnimation.currentFrame = 0;
-        animationTimer = 0.0f;
-    }
-    animationTimer += deltaTime;
-    float frameDuration = 0.25f;
-    while (animationTimer >= frameDuration) {
-        animationTimer -= frameDuration;
-        playerAnimation.currentFrame = (playerAnimation.currentFrame + 1);
-    }
-
-    // Smooth camera follow with look-ahead
-    float lookahead = 0.0f;
-    if (std::abs(playerVelocity.x) > 0.5f) {
-        lookahead = (playerVelocity.x > 0 ? 1.0f : -1.0f) * Physics::CAMERA_LOOKAHEAD;
-    }
-    cameraTargetX = playerPosition.x + lookahead;
-    cameraPosition.x += (cameraTargetX - cameraPosition.x) * Physics::CAMERA_LERP_SPEED * deltaTime;
-
-    if (cameraFollowY) {
-        float lookaheadY = 0.0f;
-        if (std::abs(playerVelocity.y) > 0.5f) {
-            lookaheadY = (playerVelocity.y > 0.0f ? 1.0f : -1.0f) * cameraLookAheadY;
-        }
-        const float desiredY = playerPosition.y + lookaheadY;
-        const float deltaY = desiredY - cameraPosition.y;
-
-        if (std::abs(deltaY) > cameraVerticalDeadzone) {
-            cameraTargetY = desiredY - (deltaY > 0.0f ? cameraVerticalDeadzone : -cameraVerticalDeadzone);
-        } else {
-            cameraTargetY = cameraPosition.y;
-        }
-        cameraPosition.y += (cameraTargetY - cameraPosition.y) * Physics::CAMERA_LERP_SPEED * deltaTime;
-    }
-
-    // Clamp camera to level bounds
-    if (hasLevelBounds) {
-        if (cameraPosition.x < levelMin.x) cameraPosition.x = levelMin.x;
-        if (cameraPosition.x > levelMax.x) cameraPosition.x = levelMax.x;
-        if (cameraPosition.y < levelMin.y) cameraPosition.y = levelMin.y;
-        if (cameraPosition.y > levelMax.y) cameraPosition.y = levelMax.y;
-    }
-
-    // Check goals for completion
-    for (size_t i = 0; i < goals.size(); ++i) {
-        if (goalTriggered[i]) continue;
-        if (checkCollision(playerPosition, playerSize, goals[i].position, goals[i].size)) {
-            goalTriggered[i] = true;
-            if (!levelCompleteCallback.isNull()) {
-                levelCompleteCallback();
-            }
+void Game::dispatchEvents() {
+    sim.drainEvents(pendingEvents);
+    const Vec2 playerSize = sim.player().size;
+    // Index loop over copies: a JS callback that re-enters the game would drain into pendingEvents again.
+    for (std::size_t i = 0; i < pendingEvents.size(); ++i) {
+        const SimEvent event = pendingEvents[i];
+        particleSystem.onEvent(event, playerSize);
+        switch (event.type) {
+            case SimEventType::Jumped: playSound("jump"); break;
+            case SimEventType::Landed: playSound("land"); break;
+            case SimEventType::PoundStarted: playSound("ground_pound"); break;
+            case SimEventType::HoverStarted: playSound("hover"); break;
+            case SimEventType::CharacterSwitched: playSound("switch"); break;
+            case SimEventType::GoalReached:
+                if (!levelCompleteCallback.isNull()) levelCompleteCallback();
+                break;
+            case SimEventType::PoundImpact:
+            case SimEventType::HoverTick:
+            case SimEventType::Running:
+                break;
         }
     }
 }
 
 
-bool Game::checkCollision(const Vec2& posA, const Vec2& sizeA, const Vec2& posB, const Vec2& sizeB) {
-    bool collisionX = (posA.x - sizeA.x / 2.0f < posB.x + sizeB.x / 2.0f) &&
-                      (posA.x + sizeA.x / 2.0f > posB.x - sizeB.x / 2.0f);
-    bool collisionY = (posA.y - sizeA.y / 2.0f < posB.y + sizeB.y / 2.0f) &&
-                      (posA.y + sizeA.y / 2.0f > posB.y - sizeB.y / 2.0f);
-    return collisionX && collisionY;
-}
+Vec2 Game::getPlayerPosition() const { return sim.player().position; }
 
+Vec2 Game::getPlayerSize() const { return sim.player().size; }
 
-Vec2 Game::getPlayerPosition() const { return playerPosition; }
-
-Vec2 Game::getPlayerSize() const { return playerSize; }
-
-Vec2 Game::getCameraPosition() const { return cameraPosition; }
+Vec2 Game::getCameraPosition() const { return sim.camera(); }
 
 std::string Game::getLevelName() const { return levelName; }
 
@@ -563,22 +167,26 @@ std::string Game::getLevelDescription() const { return levelDescription; }
 
 int Game::captureFrame() {
     using namespace FrameLayout;
+    const std::vector<Platform>& platforms = sim.platforms();
+    const std::vector<Platform>& goals = sim.goals();
     const std::vector<Particle>& particles = particleSystem.getParticles();
+    const PlayerBody& player = sim.player();
+    const AnimationState& animation = sim.animation();
     const size_t length = HEADER_SIZE
         + (platforms.size() + goals.size()) * BOX_STRIDE
         + particles.size() * PARTICLE_STRIDE;
     frameBuffer.resize(length);
     float* out = frameBuffer.data();
 
-    out[PLAYER_X] = playerPosition.x;
-    out[PLAYER_Y] = playerPosition.y;
-    out[PLAYER_W] = playerSize.x;
-    out[PLAYER_H] = playerSize.y;
-    out[CAMERA_X] = cameraPosition.x;
-    out[CAMERA_Y] = cameraPosition.y;
-    out[ANIM_STATE] = static_cast<float>(static_cast<int>(playerAnimation.currentState));
-    out[ANIM_FRAME] = static_cast<float>(playerAnimation.currentFrame);
-    out[FACING_LEFT] = playerAnimation.facingLeft ? 1.0f : 0.0f;
+    out[PLAYER_X] = player.position.x;
+    out[PLAYER_Y] = player.position.y;
+    out[PLAYER_W] = player.size.x;
+    out[PLAYER_H] = player.size.y;
+    out[CAMERA_X] = sim.camera().x;
+    out[CAMERA_Y] = sim.camera().y;
+    out[ANIM_STATE] = static_cast<float>(static_cast<int>(animation.currentState));
+    out[ANIM_FRAME] = static_cast<float>(animation.currentFrame);
+    out[FACING_LEFT] = animation.facingLeft ? 1.0f : 0.0f;
     out[CHARACTER] = static_cast<float>(getCurrentCharacter());
     out[ABILITY_STATE] = static_cast<float>(getAbilityState());
     out[ABILITY_COOLDOWN] = getAbilityCooldownPercent();
@@ -613,55 +221,12 @@ uintptr_t Game::framePtr() const {
 
 // === Bolts & Volts character system ===
 
-float Game::getMoveSpeed() const {
-    return (currentCharacter == CharacterType::Bolts)
-        ? CharacterStats::BOLTS_MOVE_SPEED
-        : CharacterStats::VOLTS_MOVE_SPEED;
-}
+float Game::getMoveSpeed() const { return sim.moveSpeed(); }
 
-float Game::getJumpStrength() const {
-    return (currentCharacter == CharacterType::Bolts)
-        ? CharacterStats::BOLTS_JUMP_STRENGTH
-        : CharacterStats::VOLTS_JUMP_STRENGTH;
-}
+float Game::getJumpStrength() const { return sim.jumpStrength(); }
 
-void Game::switchCharacter() {
-    currentCharacter = (currentCharacter == CharacterType::Bolts)
-        ? CharacterType::Volts
-        : CharacterType::Bolts;
+int Game::getCurrentCharacter() const { return static_cast<int>(sim.character()); }
 
-    // Reset ability state on switch
-    abilityState = AbilityState::Ready;
-    abilityCooldownTimer = 0.0f;
-    abilityActiveTimer = 0.0f;
+int Game::getAbilityState() const { return static_cast<int>(sim.abilityState()); }
 
-    // Feedback: particle puff + dampen velocity
-    playerVelocity.x *= 0.3f;
-    for (int i = 0; i < 6; ++i) {
-        float angle = (rand() % 100 / 100.0f) * 6.28f;
-        float spd = 0.8f + (rand() % 100 / 100.0f) * 1.2f;
-        Vec2 vel = { std::cos(angle) * spd, std::sin(angle) * spd * 0.6f };
-        Vec2 pos = { playerPosition.x, playerPosition.y - playerSize.y * 0.3f };
-        particleSystem.emit(pos, vel, 0.35f, 0.07f, (rand() % 100 - 50) * 0.08f);
-    }
-    playSound("switch");
-}
-
-int Game::getCurrentCharacter() const {
-    return static_cast<int>(currentCharacter);
-}
-
-int Game::getAbilityState() const {
-    return static_cast<int>(abilityState);
-}
-
-float Game::getAbilityCooldownPercent() const {
-    if (abilityState == AbilityState::Cooldown) {
-        float maxCooldown = (currentCharacter == CharacterType::Bolts)
-            ? CharacterStats::BOLTS_GROUND_POUND_COOLDOWN
-            : CharacterStats::VOLTS_HOVER_COOLDOWN;
-        return (maxCooldown > 0.0f) ? (abilityCooldownTimer / maxCooldown) : 0.0f;
-    }
-    if (abilityState == AbilityState::Active) return 1.0f;
-    return 0.0f;
-}
+float Game::getAbilityCooldownPercent() const { return sim.abilityCooldownPercent(); }

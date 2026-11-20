@@ -7,8 +7,12 @@
 #include <emscripten/val.h>
 #include "Types.hpp"
 #include "ParticleSystem.hpp"
+#include "sim/Simulation.hpp"
 
 
+// embind adapter around Simulation (cpp/src/sim): parses level values into a LevelSpec, forwards input and fixed
+// ticks, turns simulation events into particles, sounds and the level-complete callback, and packs the frame
+// snapshot. Gameplay rules live in the simulation, not here.
 class Game {
 public:
     Game();
@@ -38,55 +42,17 @@ public:
     float getAbilityCooldownPercent() const; // 0.0 to 1.0
 
 private:
+    void dispatchEvents();
     void playSound(const std::string& soundName);
-    bool checkCollision(const Vec2& posA, const Vec2& sizeA, const Vec2& posB, const Vec2& sizeB);
-    void updateAbility(float deltaTime);
-    void applyMovementPhysics(float deltaTime, float targetVelX);
 
-    Vec2 playerPosition;
-    Vec2 playerVelocity;
-    Vec2 playerSize;
-    Vec2 cameraPosition;
-    float cameraTargetX = 0.0f;
-    float cameraTargetY = 0.0f;
-    bool cameraFollowY = false;
-    float cameraVerticalDeadzone = 0.75f;
-    float cameraLookAheadY = 0.8f;
-
-    AnimationState playerAnimation;
-    PlayerState currentPlayerState = PlayerState::Idle;
-    float animationTimer = 0.0f;
-    std::vector<Platform> platforms;
-    std::vector<Platform> goals;
-    std::vector<bool> goalTriggered;
-    std::string levelName;
-    std::string levelDescription;
-
-    bool isGrounded = false;
-    bool wasGrounded = false;
-    bool canJump = true;
-
-    // Platforming feel tunables
-    float coyoteTimer = 0.0f;
-    float jumpBufferTimer = 0.0f;  // Input buffering for jump
-    bool jumpHeld = false;
-    bool jumpBuffered = false;     // Jump was pressed recently (within buffer window)
-
-    emscripten::val soundCallback;
-    emscripten::val levelCompleteCallback;
-    Vec2 levelMin{ -1e6f, -1e6f };
-    Vec2 levelMax{ 1e6f, 1e6f };
-    bool hasLevelBounds = false;
+    Simulation sim;
     ParticleSystem particleSystem;
+    std::vector<SimEvent> pendingEvents;  // reused by dispatchEvents
+    emscripten::val soundCallback = emscripten::val::null();
+    emscripten::val levelCompleteCallback = emscripten::val::null();
+    std::string levelName = "test-1";
+    std::string levelDescription;
     std::vector<float> frameBuffer;
-
-    // Two-character system
-    CharacterType currentCharacter = CharacterType::Bolts;
-    AbilityState abilityState = AbilityState::Ready;
-    float abilityCooldownTimer = 0.0f;
-    float abilityActiveTimer = 0.0f;
-    bool abilityKeyWasPressed = false;  // For one-shot ability activation
-    float targetMoveVelocity = 0.0f;   // Set by handleInput, applied in update with real deltaTime
 };
 
 

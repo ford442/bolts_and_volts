@@ -1,5 +1,6 @@
 cpp/src/main.cpp
 cpp/src/Game.cpp
+cpp/src/sim/Simulation.cpp
 -o src/wasm/main.js
 -std=c++17
 -Wall

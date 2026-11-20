@@ -38,8 +38,10 @@
 
 ```
 C++ (cpp/src/)
-  Game.cpp/.hpp          — physics, collision, particles, callbacks, level loading (embind)
-  ParticleSystem.hpp
+  Game.cpp/.hpp          — embind adapter: level parsing, sim events → particles/sounds/callbacks, frame snapshot
+  sim/Simulation.*       — deterministic core: physics, collision, abilities, camera (no emscripten, no RNG)
+  sim/SimEvent.hpp       — events the sim emits
+  ParticleSystem.hpp     — cosmetic particles fed by sim events (seeded xorshift)
   Types.hpp              — Vec2, Platform, InputState, AnimationState, PlayerState
   main.cpp               — EMSCRIPTEN_BINDINGS (value objects + Game class exposure)
 
@@ -59,6 +61,8 @@ TS/React (src/)
 .
 ├── cpp/src/
 │   ├── main.cpp, Game.{cpp,hpp}, ParticleSystem.hpp, Types.hpp
+│   └── sim/{Simulation.hpp,Simulation.cpp,SimEvent.hpp}
+├── tests/native/          (doctest sim tests, npm run test:sim)
 ├── src/
 │   ├── wasm/loader.ts
 │   ├── gl/{renderer.ts,shaders/}
@@ -100,6 +104,7 @@ npm run lint:fix
 
 npm run test       # Vitest unit tests
 npm run test:e2e   # Playwright smoke test (stubs WASM; no emcc required)
+npm run test:sim   # Native C++ simulation tests (host compiler; no emsdk)
 ```
 
 After `build:wasm` you should see `src/wasm/main.js` and `main.wasm`. Vite serves the `src/` tree during dev.
@@ -132,7 +137,7 @@ python deploy.py   # uploads dist/ → go.1ink.us/platformer
 
 - **Use todo_write for anything 3+ steps**: Especially binding changes, new mechanics, or cross-language refactors.
 
-- **Tests exist now**: `npm run test` covers shared TS helpers, and `npm run test:e2e` uses a Playwright smoke test with a stubbed WASM module. The full WASM build still requires `emcc`, but the smoke test does not.
+- **Tests exist now**: `npm run test` covers shared TS helpers, `npm run test:e2e` uses a Playwright smoke test with a stubbed WASM module, and `npm run test:sim` runs the C++ simulation natively (coyote, buffer, jump cut, pound, hover, goals, camera bounds, thin-platform landings). The full WASM build still requires `emcc`; neither the smoke test nor the sim tests do.
 
 ## Common Tasks
 

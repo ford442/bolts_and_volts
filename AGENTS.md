@@ -40,9 +40,12 @@
 ```
 ├── cpp/src/                    # C++ game engine
 │   ├── main.cpp                # Embind bindings (JS ↔ C++ bridge)
-│   ├── Game.cpp / Game.hpp     # Main game class: physics, collision, state machine
-│   ├── Types.hpp               # Shared structs: Vec2, Platform, InputState, AnimationState
-│   └── ParticleSystem.hpp      # Simple particle emitter/update loop
+│   ├── Game.cpp / Game.hpp     # embind adapter: level parsing, events → particles/sounds, frame snapshot
+│   ├── sim/Simulation.*        # Deterministic core: physics, collision, abilities, camera (no emscripten)
+│   ├── sim/SimEvent.hpp        # Events the sim emits (Jumped, Landed, PoundImpact, HoverTick, …)
+│   ├── Types.hpp               # Shared structs: Vec2, Platform, InputState, AnimationState; tuning constants
+│   └── ParticleSystem.hpp      # Cosmetic particles fed by sim events; seeded xorshift RNG
+├── tests/native/               # doctest sim tests (`npm run test:sim`, host compiler only)
 ├── src/                        # TypeScript / React source
 │   ├── main.tsx                # React root mount
 │   ├── components/
@@ -109,6 +112,7 @@ npm run lint          # eslint . --max-warnings 0 (flat config in eslint.config.
 ```bash
 npm run test          # Vitest unit tests
 npm run test:e2e      # Playwright smoke test (stubs WASM; no emcc required)
+npm run test:sim      # Native C++ simulation tests (g++/clang++; no emsdk, no browser)
 ```
 
 **Preview production build:**
@@ -189,11 +193,12 @@ Sound events are triggered from C++ via `setSoundCallback` → JS callback. Supp
 
 ## Known Issues & Quirks
 
-1. **Ground pound can tunnel through thin floors.** At −12 u/s the vertical resolve in `Game::update` sometimes leaves the player embedded deep enough that the horizontal resolve ejects them sideways off the platform edge (reproducible on `test-1` by jumping and pressing `E` at certain timings). Pre-existing; the fixed 1/60 step makes it rarer than the old 33 ms clamp did, but does not fix it.
-2. **Tests now exist.** `npm run test` runs Vitest unit tests and `npm run test:e2e` runs the Playwright smoke check. The smoke test stubs the WASM module so it can run without an Emscripten build.
-3. **`public/wazzy.png` is not dead.** It is referenced by `public/levels/demo-decor.json` via the `decor` array — see below. (The unused `basic.*` shaders and the `public/shaders/` copies were deleted; Vite loads GLSL via `?raw` from `src/gl/shaders/`.)
+1. **Tests now exist.** `npm run test` runs Vitest unit tests, `npm run test:e2e` runs the Playwright smoke check (stubs the WASM module, so no Emscripten build needed), and `npm run test:sim` runs the native C++ simulation tests.
+2. **`public/wazzy.png` is not dead.** It is referenced by `public/levels/demo-decor.json` via the `decor` array — see below. (The unused `basic.*` shaders and the `public/shaders/` copies were deleted; Vite loads GLSL via `?raw` from `src/gl/shaders/`.)
 
 > As of 2026-09-07: the previous #1 (`Game.cpp` stray block causing a compile error), #2 (duplicate `src/App.tsx`), and the hardcoded SFTP credential in `deploy.py` (see Security Considerations below) have all been fixed — `loadLevel`'s platform-parsing block is inside the function, `src/App.tsx` no longer exists, and `deploy.py` now reads "No SFTP passwords are stored in this repo." Removed those stale entries so an agent doesn't waste a cycle "fixing" something that's already fixed.
+>
+> As of 2026-11-20: the former #1 ("ground pound can tunnel through thin floors", sideways ejection on `test-1`) is fixed. It was float rounding, not tunneling: after the vertical resolve, the resting height (e.g. −2.4 on test-1's spawn floor) rounded so that the horizontal resolve saw an overlap and pushed the player to the platform edge. Overlaps of ≤ `CONTACT_EPSILON` now count as contact (`cpp/src/sim/Simulation.cpp`), and `tests/native/sim_tests.cpp` ("resting contact is not a collision") covers test-1's floor and a sweep of heights.
 
 ## Known Issues / Blockers (2026-09-07)
 
