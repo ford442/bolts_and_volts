@@ -52,8 +52,7 @@
 │   │   ├── renderer.ts         # WebGL2 renderer: sprite drawing, background, textures
 │   │   └── shaders/            # GLSL ES 3.0 shaders
 │   │       ├── tex.vert.glsl / tex.frag.glsl         # Sprite / spritesheet shader
-│   │       ├── background.vert.glsl / background.frag.glsl  # Parallax background shader
-│   │       └── basic.vert.glsl / basic.frag.glsl     # Unused solid-color shader
+│   │       └── background.vert.glsl / background.frag.glsl  # Parallax background shader
 │   ├── wasm/
 │   │   └── loader.ts           # TypeScript interfaces + WASM module loader
 │   └── audio/
@@ -144,7 +143,8 @@ The Emscripten build produces an ES module (`src/wasm/main.js`) with `EXPORT_ES6
 `src/gl/renderer.ts` is a hand-written WebGL2 renderer:
 - **Sprite program:** draws textured quads with sprite-sheet animation support (`u_sprite_frame_coord`, `u_flip_horizontal`).
 - **Background program:** full-screen quad with parallax scrolling based on camera position.
-- **Debug overlays:** semi-transparent red (player) and green (platform) collision boxes drawn on top.
+- **Context and sizing:** the WebGL2 context is opaque (`alpha: false`), non-MSAA, with no depth/stencil, and requests `desynchronized` presentation (one retry without it). The canvas backing store follows its CSS box × `min(devicePixelRatio, 2)` (`src/lib/canvasSize.ts`, applied by the game loop through `Renderer.resize`); the world is always 10 units across the backing-store width. Each program has a VAO that is bound together with it (`useSpriteProgram` / `useBackgroundProgram`); constant GL state is set once at init.
+- **Debug overlays:** semi-transparent red (player) and green (platform) collision boxes, hidden unless `Renderer.setCollisionDebug(true)`.
 - **Texture anchors:** when loading the player spritesheet, the renderer inspects alpha pixels to compute per-frame bottom offsets so the sprite’s feet align with the collision box.
 
 ### Level Format
@@ -192,7 +192,7 @@ Sound events are triggered from C++ via `setSoundCallback` → JS callback. Supp
 
 1. **Legacy global WASM loader.** `custom.d.ts` and `loader.ts` still reference `window.createGameModule` and a dynamic `game.js` script injection. The current Vite build imports the module directly, so the fallback path is rarely used.
 2. **Tests now exist.** `npm run test` runs Vitest unit tests and `npm run test:e2e` runs the Playwright smoke check. The smoke test stubs the WASM module so it can run without an Emscripten build.
-3. **`basic.vert.glsl` / `basic.frag.glsl` are dead.** Nothing in `src/` imports this shader pair. Safe to delete, or wire up if it's meant to be used. (`public/wazzy.png`, previously listed here too, is no longer dead — see below.)
+3. **`public/wazzy.png` is not dead.** It is referenced by `public/levels/demo-decor.json` via the `decor` array — see below. (The unused `basic.*` shaders and the `public/shaders/` copies were deleted; Vite loads GLSL via `?raw` from `src/gl/shaders/`.)
 
 > As of 2026-09-07: the previous #1 (`Game.cpp` stray block causing a compile error), #2 (duplicate `src/App.tsx`), and the hardcoded SFTP credential in `deploy.py` (see Security Considerations below) have all been fixed — `loadLevel`'s platform-parsing block is inside the function, `src/App.tsx` no longer exists, and `deploy.py` now reads "No SFTP passwords are stored in this repo." Removed those stale entries so an agent doesn't waste a cycle "fixing" something that's already fixed.
 

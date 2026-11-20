@@ -66,10 +66,11 @@ C++ (Game logic) → Emscripten → src/wasm/main.js + main.wasm
 
 ### TypeScript/React side (`src/`)
 - `wasm/loader.ts` — TypeScript interfaces mirroring the C++ embind exports; `loadWasmModule()` either uses an already-loaded global or injects `game.js` via a `<script>` tag.
-- `gl/renderer.ts` — `Renderer` class: compiles GLSL shaders, manages two WebGL programs (sprite and background), loads textures, computes per-frame foot anchors from spritesheet pixel data, draws scene each frame.
+- `gl/renderer.ts` — `Renderer` class: creates an opaque, non-MSAA, depth-less WebGL2 context (`CONTEXT_ATTRIBUTES`; `desynchronized` is requested with one retry without it), compiles GLSL shaders, manages two WebGL programs (sprite and background) each with a VAO bound alongside the program, loads textures, computes per-frame foot anchors from spritesheet pixel data, draws scene each frame. Constant GL state (blend, depth/scissor off, `UNPACK_ALIGNMENT`) is set once at init; the projection and viewport are rebuilt in `resize()`. Red/green collision boxes are off by default (`setCollisionDebug`).
 - `gl/shaders/` — two shader pairs: `tex.vert/frag.glsl` (sprite/platform rendering with spritesheet UV math) and `background.vert/frag.glsl` (parallax scrolling background quad).
 - `audio/AudioManager.ts` — wraps Web Audio API; music starts on first keypress (browser autoplay policy); SFX names (`jump`, `land`) are fired by a JS callback registered with `Game::setSoundCallback`.
-- `components/GameCanvas.tsx` — mounts the canvas, owns the `requestAnimationFrame` loop, wires input/output between WASM and renderer, manages volume state and level-complete overlay.
+- `lib/canvasSize.ts` — `observeCanvasSize` reports the canvas's backing-store size (CSS content box × `min(devicePixelRatio, 2)`) on `ResizeObserver` and DPR changes; `backingStoreSize` is the pure part (unit-tested).
+- `components/GameCanvas.tsx` — mounts the canvas, owns the `requestAnimationFrame` loop, wires input/output between WASM and renderer, manages volume state and level-complete overlay. The canvas has no fixed `width`/`height`; the game loop applies the latest observed size via `renderer.resize()` right before drawing. The canvas is `position: absolute` in its wrapper on purpose: in flow, its intrinsic size (the backing store) feeds back into the flex layout and the box ratchets larger.
 - `components/App.tsx` — top-level React shell (minimal). (The old duplicate `src/App.tsx` mentioned in earlier versions of this doc was removed — `src/main.tsx` only ever imported `./components/App`.)
 
 ### Level-authoring hotkeys
@@ -91,13 +92,13 @@ An optional `"camera"` block supports per-level camera tuning: `followY`, `verti
 Without a `"camera"` block, behavior remains backward-compatible and the camera only follows X.
 
 ### Coordinate system
-World units are used throughout (not pixels). The viewport shows 10 world-units wide, aspect-ratio-corrected. Positive Y is up. Player collision and camera positions come from WASM; the renderer applies a per-frame foot-anchor offset computed from spritesheet alpha to align sprites with collision boxes.
+World units are used throughout (not pixels). The viewport shows 10 world-units across the canvas's backing-store width, with the height following the canvas aspect ratio (no letterboxing). Positive Y is up. Player collision and camera positions come from WASM; the renderer applies a per-frame foot-anchor offset computed from spritesheet alpha to align sprites with collision boxes.
 
 ### Assets (`public/`)
 - `wazzy_spritesheet.png` — 64×64 px frames, rows: 0=idle (2 frames), 1=run (4 frames), 2=jump (1 frame).
 - `platform.png`, `background.png` — textures tiled/scrolled by the two shader programs.
 - `background-music.mp3`, `jump.mp3`, `land.mp3` — audio assets loaded at init.
-- `basic.vert/frag.glsl` shader pair in `src/gl/shaders/` is unused dead weight (nothing imports it). `wazzy.png` is *not* dead — `public/levels/demo-decor.json` references it via the `decor` array (see Known Issues below).
+- `wazzy.png` is *not* dead — `public/levels/demo-decor.json` references it via the `decor` array (see Known Issues below).
 
 ## Known Issues / Blockers (2026-09-07)
 

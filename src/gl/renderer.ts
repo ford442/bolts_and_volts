@@ -1,5 +1,6 @@
 import type { Vec2, Platform, AnimationState, Particle } from '../wasm/loader';
-import { gridLineIndices, type AuthoringOverlay } from '../lib/authoring';
+import { VIEW_WORLD_WIDTH, gridLineIndices, type AuthoringOverlay } from '../lib/authoring';
+import type { CanvasSize } from '../lib/canvasSize';
 import {
   CULL_DEBUG_INSET,
   CULL_MARGIN,
@@ -74,6 +75,30 @@ export type DecorLayers = {
   foreground: DecorItem[];
 };
 
+/**
+ * Opaque 2D game view: no alpha channel to composite with the page, no MSAA (sprites are NEAREST-filtered
+ * pixel art), no depth/stencil (nothing uses them). `premultipliedAlpha` and `preserveDrawingBuffer` are
+ * spelled out at their defaults on purpose; `failIfMajorPerformanceCaveat: false` keeps software GL booting.
+ */
+const CONTEXT_ATTRIBUTES: WebGLContextAttributes = {
+  alpha: false,
+  antialias: false,
+  depth: false,
+  stencil: false,
+  premultipliedAlpha: true,
+  preserveDrawingBuffer: false,
+  powerPreference: 'high-performance',
+  failIfMajorPerformanceCaveat: false,
+};
+
+/** Low-latency presentation is a hint some browsers reject; if so we retry once without it. */
+function createWebGL2Context(canvas: HTMLCanvasElement): WebGL2RenderingContext | null {
+  return (
+    canvas.getContext('webgl2', { ...CONTEXT_ATTRIBUTES, desynchronized: true }) ??
+    canvas.getContext('webgl2', { ...CONTEXT_ATTRIBUTES, desynchronized: false })
+  );
+}
+
 const animationMap = {
   idle: { row: 0, frames: 2, frameSize: { x: 64, y: 64 } },
   run: { row: 1, frames: 4, frameSize: { x: 64, y: 64 } },
@@ -105,6 +130,8 @@ export class Renderer {
   private backgroundScrollFactorUniformLocation: WebGLUniformLocation | null;
   private backgroundScaleUniformLocation: WebGLUniformLocation | null;
   private backgroundOffsetYUniformLocation: WebGLUniformLocation | null;
+  private spriteVao: WebGLVertexArrayObject | null = null;
+  private backgroundVao: WebGLVertexArrayObject | null = null;
   private unitSquarePositionBuffer: WebGLBuffer | null = null;
   private unitSquareTexCoordBuffer: WebGLBuffer | null = null;
   private fullScreenQuadBuffer: WebGLBuffer | null = null;
@@ -114,6 +141,13 @@ export class Renderer {
   private debugGreenTexture: TextureObject | null = null;
   private whiteTexture: TextureObject | null = null;
   private debugCyanTexture: TextureObject | null = null; // used for goal visualization (playability win)
+  // World-space view and the sprite projection, rebuilt on resize (never per sprite).
+  private view = { worldWidth: VIEW_WORLD_WIDTH, worldHeight: VIEW_WORLD_WIDTH };
+  private projection = new Float32Array(16);
+  // Backing-store pixels per CSS pixel; lets authoring lines keep a constant on-screen thickness at any DPR.
+  private pixelRatio = 1;
+  // Red player / green platform collision boxes. Off for normal play; a debug toggle can flip it via setCollisionDebug.
+  private collisionDebug = false;
   // Draw counters from the most recent drawScene call (render-only visible-rect culling).
   private cullStats: CullStats = emptyCullStats();
   // Level-authoring overlay colours (grid, platform outlines, snap marker).
@@ -128,9 +162,15 @@ export class Renderer {
 
 
   constructor(canvas: HTMLCanvasElement, spriteVsSource: string, spriteFsSource: string, bgVsSource: string, bgFsSource: string) {
-    const context = canvas.getContext('webgl2');
+    const context = createWebGL2Context(canvas);
     if (!context) throw new Error('WebGL2 is not supported.');
     this.gl = context;
+    // Pipeline state that never changes, set once instead of per draw call.
+    this.gl.disable(this.gl.DEPTH_TEST);
+    this.gl.disable(this.gl.SCISSOR_TEST);
+    this.gl.pixelStorei(this.gl.UNPACK_ALIGNMENT, 1); // odd-width PNG uploads
+    this.gl.enable(this.gl.BLEND);
+    this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
     const spriteVertexShader = this.compileShader(this.gl.VERTEX_SHADER, spriteVsSource);
     const spriteFragmentShader = this.compileShader(this.gl.FRAGMENT_SHADER, spriteFsSource);
     this.spriteProgram = this.createProgram(spriteVertexShader, spriteFragmentShader);
@@ -157,7 +197,6 @@ export class Renderer {
     this.backgroundScrollFactorUniformLocation = this.gl.getUniformLocation(this.backgroundProgram, 'u_scroll_factor');
     this.backgroundScaleUniformLocation = this.gl.getUniformLocation(this.backgroundProgram, 'u_scale');
     this.backgroundOffsetYUniformLocation = this.gl.getUniformLocation(this.backgroundProgram, 'u_offset_y');
-    this.gl.viewport(0, 0, canvas.width, canvas.height);
     this.setupGeometry();
     // create simple solid debug textures
     this.debugRedTexture = this.createSolidTexture([255, 0, 0, 128]);
@@ -173,8 +212,56 @@ export class Renderer {
       snap: this.createSolidTexture([255, 0, 220, 255]),
     };
     // u_alpha has no GLSL default (it would read as 0), so initialise it once up front.
-    this.gl.useProgram(this.spriteProgram);
+    this.useSpriteProgram();
     this.gl.uniform1f(this.spriteAlphaUniformLocation, 1.0);
+    this.updateViewport();
+  }
+
+  /**
+   * Match the drawing buffer to the canvas's on-screen size (see `observeCanvasSize`). Assigning
+   * `canvas.width/height` clears the buffer even when the value is unchanged, so only touch it on a real change.
+   */
+  public resize(size: CanvasSize) {
+    const canvas = this.gl.canvas as HTMLCanvasElement;
+    if (canvas.width === size.width && canvas.height === size.height && this.pixelRatio === size.pixelRatio) return;
+    canvas.width = size.width;
+    canvas.height = size.height;
+    this.pixelRatio = size.pixelRatio;
+    this.updateViewport();
+  }
+
+  private updateViewport() {
+    const { width, height } = this.gl.canvas;
+    this.gl.viewport(0, 0, width, height);
+    // World policy: VIEW_WORLD_WIDTH units across the backing-store width, height follows the aspect (no letterboxing).
+    const worldWidth = VIEW_WORLD_WIDTH;
+    const worldHeight = worldWidth / (width / height);
+    this.view = { worldWidth, worldHeight };
+    this.projection.set([2.0 / worldWidth, 0, 0, 0, 0, 2.0 / worldHeight, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1]);
+    // Uniforms persist per program, so uploading here covers every later draw.
+    this.useSpriteProgram();
+    this.gl.uniformMatrix4fv(this.spriteProjectionMatrixUniformLocation, false, this.projection);
+  }
+
+  /** Show or hide the red player / green platform collision boxes (off by default). */
+  public setCollisionDebug(enabled: boolean) {
+    this.collisionDebug = enabled;
+  }
+
+  /** The sprite VAO must be bound whenever `drawSprite` runs, so the two always switch together. */
+  private useSpriteProgram() {
+    this.gl.useProgram(this.spriteProgram);
+    this.gl.bindVertexArray(this.spriteVao);
+  }
+
+  private useBackgroundProgram() {
+    this.gl.useProgram(this.backgroundProgram);
+    this.gl.bindVertexArray(this.backgroundVao);
+  }
+
+  /** World units covered by one CSS pixel, for overlay lines that should keep a constant on-screen thickness. */
+  private worldUnitsPerCssPixel(): number {
+    return (this.view.worldWidth / this.gl.canvas.width) * this.pixelRatio;
   }
 
   private compileShader(type: number, source: string): WebGLShader {
@@ -292,6 +379,23 @@ export class Renderer {
     this.fullScreenQuadBuffer = this.gl.createBuffer();
     this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.fullScreenQuadBuffer);
     this.gl.bufferData(this.gl.ARRAY_BUFFER, fullScreenPositions, this.gl.STATIC_DRAW);
+
+    // One VAO per quad kind records the attribute wiring once; drawing then only binds it with its program.
+    this.spriteVao = this.gl.createVertexArray();
+    this.gl.bindVertexArray(this.spriteVao);
+    this.bindQuadAttribute(this.spritePositionAttributeLocation, this.unitSquarePositionBuffer);
+    this.bindQuadAttribute(this.spriteTexCoordAttributeLocation, this.unitSquareTexCoordBuffer);
+    this.backgroundVao = this.gl.createVertexArray();
+    this.gl.bindVertexArray(this.backgroundVao);
+    this.bindQuadAttribute(this.backgroundPositionAttributeLocation, this.fullScreenQuadBuffer);
+    this.gl.bindVertexArray(null);
+  }
+
+  private bindQuadAttribute(location: number, buffer: WebGLBuffer | null) {
+    if (location < 0) return; // attribute optimised out of the shader
+    this.gl.bindBuffer(this.gl.ARRAY_BUFFER, buffer);
+    this.gl.enableVertexAttribArray(location);
+    this.gl.vertexAttribPointer(location, 2, this.gl.FLOAT, false, 0, 0);
   }
 
 
@@ -339,24 +443,9 @@ export class Renderer {
     this.gl.uniform2f(this.spriteFrameSizeUniformLocation, frameSize.x, frameSize.y);
     this.gl.uniform2f(this.spriteFrameCoordUniformLocation, frameCoord.x, frameCoord.y);
     this.gl.uniform1f(this.spriteFlipHorizontalUniformLocation, facingLeft ? 1.0 : 0.0);
-    this.gl.enableVertexAttribArray(this.spritePositionAttributeLocation);
-    this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.unitSquarePositionBuffer);
-    this.gl.vertexAttribPointer(this.spritePositionAttributeLocation, 2, this.gl.FLOAT, false, 0, 0);
-    this.gl.enableVertexAttribArray(this.spriteTexCoordAttributeLocation);
-    this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.unitSquareTexCoordBuffer);
-    this.gl.vertexAttribPointer(this.spriteTexCoordAttributeLocation, 2, this.gl.FLOAT, false, 0, 0);
     this.gl.drawArrays(this.gl.TRIANGLES, 0, 6);
   }
 
-
-  private setSpriteProjection() {
-    const aspectRatio = this.gl.canvas.width / this.gl.canvas.height;
-    const worldWidth = 10.0;
-    const worldHeight = worldWidth / aspectRatio;
-    const projectionMatrix = [2.0 / worldWidth, 0, 0, 0, 0, 2.0 / worldHeight, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1];
-    this.gl.uniformMatrix4fv(this.spriteProjectionMatrixUniformLocation, false, projectionMatrix);
-    return { worldWidth, worldHeight };
-  }
 
   private drawWorldBackgroundLayer(cameraPosition: Vec2, layer: WorldBackgroundLayer) {
     // Parallax pivots on the image centre: effective camera = centre + (camera - centre) * factor.
@@ -365,14 +454,12 @@ export class Renderer {
       x: layer.position.x + (cameraPosition.x - layer.position.x) * layer.parallaxX,
       y: layer.position.y + (cameraPosition.y - layer.position.y) * layer.parallaxY,
     };
-    this.gl.useProgram(this.spriteProgram);
-    const { worldWidth, worldHeight } = this.setSpriteProjection();
+    this.useSpriteProgram();
+    const { worldWidth, worldHeight } = this.view;
     // Cheap cull: skip the draw when the image rectangle is entirely off screen.
     const dx = Math.abs(layer.position.x - effectiveCamera.x);
     const dy = Math.abs(layer.position.y - effectiveCamera.y);
     if (dx > (layer.size.x + worldWidth) / 2 || dy > (layer.size.y + worldHeight) / 2) return;
-    this.gl.enable(this.gl.BLEND);
-    this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
     this.gl.uniform2f(this.spriteCameraPositionUniformLocation, effectiveCamera.x, effectiveCamera.y);
     const full = { x: layer.texture.width, y: layer.texture.height };
     this.drawSprite(layer.position, layer.size, layer.texture, full, full, { x: 0, y: 0 }, false, 0, false);
@@ -383,7 +470,7 @@ export class Renderer {
       this.drawWorldBackgroundLayer(cameraPosition, layer);
       return;
     }
-    this.gl.useProgram(this.backgroundProgram);
+    this.useBackgroundProgram();
     this.gl.bindTexture(this.gl.TEXTURE_2D, layer.texture.texture);
     this.gl.uniform1i(this.backgroundTextureUniformLocation, 0);
     this.gl.uniform2f(this.backgroundCameraPositionUniformLocation, cameraPosition.x, cameraPosition.y);
@@ -392,9 +479,6 @@ export class Renderer {
     this.gl.uniform2f(this.backgroundScrollFactorUniformLocation, layer.scrollFactorX, layer.scrollFactorY);
     this.gl.uniform1f(this.backgroundScaleUniformLocation, layer.scale);
     this.gl.uniform1f(this.backgroundOffsetYUniformLocation, layer.offsetY);
-    this.gl.enableVertexAttribArray(this.backgroundPositionAttributeLocation);
-    this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.fullScreenQuadBuffer);
-    this.gl.vertexAttribPointer(this.backgroundPositionAttributeLocation, 2, this.gl.FLOAT, false, 0, 0);
     this.gl.drawArrays(this.gl.TRIANGLES, 0, 6);
   }
 
@@ -464,11 +548,9 @@ export class Renderer {
         this.drawBackgroundLayer(cameraPosition, layer);
       }
     }
-    this.gl.useProgram(this.spriteProgram);
-    const view = this.setSpriteProjection();
+    this.useSpriteProgram();
+    const view = this.view;
     this.gl.uniform2f(this.spriteCameraPositionUniformLocation, cameraPosition.x, cameraPosition.y);
-    this.gl.enable(this.gl.BLEND);
-    this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
 
     // Render-only visible-rect culling: physics keeps using every platform. In cull-debug mode the
     // rect is shrunk inside the screen so items visibly drop out before reaching the edge.
@@ -542,11 +624,10 @@ export class Renderer {
       // pass visualYOffset so sprite is nudged down to sit on platform
       this.drawSprite(playerPosition, playerSize, playerTexture, { x: playerTexture.width, y: playerTexture.height }, animData.frameSize, frameCoord, playerAnim.facingLeft, visualYOffset);
 
-      // character param received (0=Bolts, 1=Volts). Future: different tint, atlas row offset, or separate texture.
-      // For now the debug UI + mechanical differences (speed/jump) provide the differentiation.
+      // `character` (0=Bolts, 1=Volts) is accepted but not used for presentation yet: both characters
+      // share one spritesheet and differ only in mechanics (speed/jump) until character presentation lands.
 
-      // draw player collision box
-      if (this.debugRedTexture) {
+      if (this.collisionDebug && this.debugRedTexture) {
         this.drawSprite({ x: playerPosition.x, y: playerPosition.y }, { x: playerSize.x, y: playerSize.y }, this.debugRedTexture, { x: 1, y: 1 }, { x: 1, y: 1 }, { x: 0, y: 0 }, false);
       }
     }
@@ -568,8 +649,8 @@ export class Renderer {
       this.gl.uniform2f(this.spriteCameraPositionUniformLocation, cameraPosition.x, cameraPosition.y);
     }
 
-    // draw debug collision boxes (platforms = green, player = red)
-    if (this.debugGreenTexture) {
+    // debug collision boxes (platforms = green; the player's red box is drawn with the player above)
+    if (this.collisionDebug && this.debugGreenTexture) {
       for (let i = 0; i < platforms.length; i++) {
         if (!platformVisible[i]) continue;
         const platform = platforms[i];
@@ -600,10 +681,9 @@ export class Renderer {
   private drawCullRect(cameraPosition: Vec2, rect: Rect) {
     const textures = this.authoringTextures;
     if (!textures) return;
-    this.gl.useProgram(this.spriteProgram);
-    const { worldWidth } = this.setSpriteProjection();
+    this.useSpriteProgram();
     this.gl.uniform2f(this.spriteCameraPositionUniformLocation, cameraPosition.x, cameraPosition.y);
-    const px = worldWidth / this.gl.canvas.width;
+    const px = this.worldUnitsPerCssPixel();
     const size = { x: rect.maxX - rect.minX, y: rect.maxY - rect.minY };
     const center = { x: (rect.minX + rect.maxX) / 2, y: (rect.minY + rect.maxY) / 2 };
     this.strokeRect(center, size, 3 * px, textures.snap);
@@ -625,17 +705,15 @@ export class Renderer {
   /**
    * Level-authoring aids, all in world space so they line up with platforms regardless of which
    * background mode is active: grid, high-contrast platform outlines, and a snap marker.
-   * Line widths are constant in screen pixels, so they stay crisp at any canvas size.
+   * Line widths are constant in CSS pixels, so they keep the same on-screen thickness at any canvas size or DPR.
    */
   private drawAuthoringOverlay(cameraPosition: Vec2, platforms: Platform[], overlay: AuthoringOverlay) {
     const textures = this.authoringTextures;
     if (!textures) return;
-    this.gl.useProgram(this.spriteProgram);
-    const { worldWidth, worldHeight } = this.setSpriteProjection();
+    this.useSpriteProgram();
+    const { worldWidth, worldHeight } = this.view;
     this.gl.uniform2f(this.spriteCameraPositionUniformLocation, cameraPosition.x, cameraPosition.y);
-    this.gl.enable(this.gl.BLEND);
-    this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
-    const px = worldWidth / this.gl.canvas.width; // world units per screen pixel
+    const px = this.worldUnitsPerCssPixel();
     const left = cameraPosition.x - worldWidth / 2;
     const right = cameraPosition.x + worldWidth / 2;
     const bottom = cameraPosition.y - worldHeight / 2;

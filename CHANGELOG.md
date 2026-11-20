@@ -22,6 +22,13 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- Renderer context and canvas sizing: the WebGL2 context is now opaque (`alpha: false`), non-MSAA, without depth/stencil, prefers the discrete GPU and requests `desynchronized` presentation (one retry without it). The canvas no longer has a fixed 1280×720 backing store: it follows its CSS box × `min(devicePixelRatio, 2)` via `ResizeObserver` (`src/lib/canvasSize.ts`, `Renderer.resize`), so the world is no longer stretched on non-16:9 layouts and HiDPI screens stay sharp. The canvas is taken out of flow (`position: absolute`) so its backing-store size cannot feed back into the flex layout. In dev, a stale first StrictMode init no longer keeps running as a second game/renderer on the same canvas. The world stays 10 units across the backing-store width (no letterboxing). Unit tests in `tests/unit/canvasSize.test.ts`; renderer tests in `tests/e2e/renderer.spec.ts`.
+- Draw-state hygiene: blend/depth/scissor/`UNPACK_ALIGNMENT` are set once at init, the projection is rebuilt on resize instead of per sprite, and each quad kind has a VAO instead of re-binding buffers per sprite. Authoring-overlay line widths are now constant in CSS pixels (they keep the same on-screen thickness on HiDPI).
+- Red/green collision debug boxes are no longer drawn during normal play; they sit behind `Renderer.setCollisionDebug` (default off).
 - Camera supports optional vertical follow + Y clamping via per-level camera config.
 - Goals are read from WASM getters in the render loop instead of mirrored JS refs.
 - README and AI docs now cross-link to the new docs layout.
+
+### Removed
+
+- Dead shader copies: `src/gl/shaders/basic.vert.glsl` / `basic.frag.glsl` (nothing imported them) and `public/shaders/*` (Vite loads GLSL via `?raw` from `src/gl/shaders/`).

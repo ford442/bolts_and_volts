@@ -1,6 +1,6 @@
 import type { Vec2 } from '../wasm/loader';
 
-/** World units visible horizontally. Mirrors `Renderer.setSpriteProjection`. */
+/** World units visible across the backing-store width. The renderer's projection is built from this. */
 export const VIEW_WORLD_WIDTH = 10.0;
 
 /** Grid spacings (world units) that the grid-step hotkey cycles through. */
