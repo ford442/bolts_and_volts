@@ -86,7 +86,7 @@ TypeScript interfaces in `src/wasm/loader.ts` mirror Emscripten bindings in `cpp
 
 - **Shader uniforms:** Use `Renderer` class methods to set matrices, positions, and sampler uniforms. Shader source is imported as raw strings with `?raw` Vite query parameter.
 - **Texture atlases:** `animationMap` in `renderer.ts` defines sprite regions (row, frame count, frame size). Per-texture anchors can be stored to fine-tune sprite positioning.
-- **Buffer management:** Vertex/UV buffers are created once and reused; uniforms are updated each frame.
+- **Buffer management:** Vertex/UV buffers and one VAO per quad kind are created once and reused (the VAO is bound together with its program); per-sprite uniforms are updated each draw, the projection only on resize.
 
 ### C++ / Emscripten
 
@@ -116,7 +116,7 @@ TypeScript interfaces in `src/wasm/loader.ts` mirror Emscripten bindings in `cpp
 
 ## Relevant Notes
 
-- **Canvas size:** Fixed at 1280×720 with 16:9 aspect ratio; `maxWidth` constraint in App.tsx for responsive layout.
+- **Canvas size:** The backing store follows the canvas's CSS box × `min(devicePixelRatio, 2)` (`src/lib/canvasSize.ts`); the 16:9 box and `maxWidth` come from App.tsx. The world is 10 units across the backing-store width.
 - **Camera system:** Follows player horizontally; camera position is set per-frame from WASM.
 - **Particle system:** Managed in WASM (physics, rotation, lifetime); rendered in JavaScript as simple quads.
 - **Audio context:** Resumed on first user interaction (key press) to comply with browser autoplay policies.

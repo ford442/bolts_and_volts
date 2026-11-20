@@ -15,6 +15,7 @@ import {
   type AuthoringState,
 } from '../lib/authoring';
 import { formatCullStats } from '../lib/culling';
+import { observeCanvasSize, type CanvasSize } from '../lib/canvasSize';
 import { reportLevelIssues, summarizeLevelIssues, validateLevel, type LevelIssueSummary } from '../lib/levelValidator';
 
 import vertexShaderSource from '../gl/shaders/tex.vert.glsl?raw';
@@ -421,7 +422,15 @@ const GameCanvas = () => {
     if (!canvas) return;
     let animationFrameId = 0;
     let gameInstance: Game | null = null;
+    // Set by cleanup. React StrictMode runs this effect twice in dev, and the first run's async init would
+    // otherwise carry on as a second game + renderer on the same canvas (never resized, drawn over the live one).
+    let disposed = false;
     const audioManager = audioManagerRef.current!;
+
+    // The observer only records the latest size; the game loop applies it right before drawing. Resizing a
+    // canvas clears it, so doing that from the observer callback (after rAF) would present a blank frame.
+    let pendingSize: CanvasSize | null = null;
+    const stopObservingSize = observeCanvasSize(canvas, (size) => { pendingSize = size; });
 
     const handleSoundEvent = (soundName: string) => {
       audioManager.playSfx(soundName);
@@ -436,6 +445,7 @@ const GameCanvas = () => {
         ]);
 
         const wasmModule = await loadWasmModule();
+        if (disposed) return;
         gameInstance = new wasmModule.Game();
         gameInstance.setSoundCallback(handleSoundEvent);
 
@@ -445,6 +455,12 @@ const GameCanvas = () => {
         });
 
         const renderer = new Renderer(canvas, vertexShaderSource, fragmentShaderSource, backgroundVertexSource, backgroundFragmentSource);
+        const applyPendingSize = () => {
+          if (!pendingSize) return;
+          renderer.resize(pendingSize);
+          pendingSize = null;
+        };
+        applyPendingSize();
         const [playerTexture, platformTexture] = await Promise.all([
           renderer.loadTexture(WAZZY_SPRITESHEET_URL),
           renderer.loadTexture(PLATFORM_TEXTURE_URL),
@@ -633,7 +649,8 @@ const GameCanvas = () => {
         let lastTime = performance.now();
 
         const gameLoop = (timestamp: number) => {
-          if (!gameInstance) return;
+          if (!gameInstance || disposed) return;
+          applyPendingSize();
           const deltaTime = (timestamp - lastTime) / 1000.0;
           lastTime = timestamp;
           const inputState: InputState = {
@@ -719,6 +736,7 @@ const GameCanvas = () => {
           if (cullDebugRef.current) setCullInfo(formatCullStats(renderer.getCullStats()));
           animationFrameId = requestAnimationFrame(gameLoop);
         };
+        if (disposed) return;
         animationFrameId = requestAnimationFrame(gameLoop);
       } catch (error) {
         console.error("Failed to initialize game:", error);
@@ -728,6 +746,8 @@ const GameCanvas = () => {
     initializeAndRun();
 
     return () => {
+      disposed = true;
+      stopObservingSize();
       cancelAnimationFrame(animationFrameId);
       reloadLevelRef.current = null;
       gameInstanceRef.current = null;
@@ -745,6 +765,10 @@ const GameCanvas = () => {
 
   const canvasStyle: React.CSSProperties = {
     width: '100%', height: '100%', backgroundColor: '#000',
+    // The backing store follows this box (see observeCanvasSize), so it must not also size the box. In flow, the
+    // canvas's intrinsic size (= backing store) raises the flex item's minimum height, the box grows, the backing
+    // store follows, and so on. Out of flow it contributes nothing to its parent's size.
+    position: 'absolute', top: 0, left: 0,
     borderRadius: '8px', boxShadow: '0 0 20px rgba(0, 170, 255, 0.5)',
     border: '2px solid var(--primary-color)'
   };
@@ -762,8 +786,6 @@ const GameCanvas = () => {
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
       <canvas
         ref={canvasRef}
-        width={1280}
-        height={720}
         style={canvasStyle}
         onMouseMove={handleCanvasMouseMove}
         onMouseLeave={() => { mouseRef.current = null; }}
