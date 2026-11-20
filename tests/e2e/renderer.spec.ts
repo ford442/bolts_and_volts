@@ -8,8 +8,17 @@ type Rig = {
   renderer: { resize(size: { width: number; height: number; pixelRatio: number }): void; setCollisionDebug(on: boolean): void };
   canvas: HTMLCanvasElement;
   gl: WebGL2RenderingContext;
-  /** Render an empty scene plus the given goals/platforms and read the pixels back in the same task. */
-  draw(opts: { goals?: unknown[]; platforms?: unknown[] }): Frame;
+  /**
+   * Render an empty scene plus the given goals/platforms and read the pixels back in the same task.
+   * `player` draws a solid white (or red) player at the origin (size 1) with the given tint; `whitePlatforms`
+   * textures the platforms with solid white instead of leaving them undrawn.
+   */
+  draw(opts: {
+    goals?: unknown[];
+    platforms?: unknown[];
+    player?: { tint: [number, number, number, number]; color?: 'white' | 'red' };
+    whitePlatforms?: boolean;
+  }): Frame;
 };
 declare global {
   interface Window { __rig?: Rig }
@@ -30,12 +39,22 @@ async function createRig(page: Page) {
     canvas.height = 180;
     const renderer = new Renderer(canvas, vs, fs, bvs, bfs);
     const gl = canvas.getContext('webgl2')!;
+    const swatch = async (color: string) => {
+      const c = document.createElement('canvas');
+      c.width = c.height = 1;
+      const ctx = c.getContext('2d')!;
+      ctx.fillStyle = color;
+      ctx.fillRect(0, 0, 1, 1);
+      return renderer.loadTexture(c.toDataURL('image/png'));
+    };
+    const white = await swatch('#fff');
+    const red = await swatch('#f00');
     const draw: Rig['draw'] = (opts) => {
       renderer.drawScene(
         { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 1, y: 1 },
-        (opts.platforms ?? []) as never[], [], null, null, [],
-        { distant: [], mid: [], foreground: [] }, [], null,
-        (opts.goals ?? []) as never[], 0, null, false
+        (opts.platforms ?? []) as never[], [], opts.player ? (opts.player.color === 'red' ? red : white) : null, opts.whitePlatforms ? white : null, [],
+        { distant: [], mid: [], foreground: [] }, [], opts.player ? { state: 0, frame: 0, facingLeft: false } : null,
+        (opts.goals ?? []) as never[], opts.player?.tint, null, false
       );
       // The drawing buffer is only valid until the end of the task, so read it back right away.
       const pixels = new Uint8Array(canvas.width * canvas.height * 4);
@@ -150,4 +169,58 @@ test('collision boxes are hidden unless the debug flag is set', async ({ page })
   expect(centre.on.g).toBeGreaterThan(100); // 50% green overlay
   expect(centre.on.r).toBeLessThan(40);
   expect(centre.offAgain).toEqual(centre.off);
+});
+
+test('the player tint colours the player sprite only, and does not leak into later draws', async ({ page }) => {
+  await createRig(page);
+  const px = await page.evaluate(() => {
+    const rig = window.__rig!;
+    // The player is at the view centre; the platform is 3 world units to its right (32 px per unit on this canvas).
+    const platforms = [{ position: { x: 3, y: 0 }, size: { x: 1, y: 1 } }];
+    const at = (frame: Frame, worldX: number) => {
+      const i = ((frame.height >> 1) * frame.width + (frame.width >> 1) + Math.round(worldX * 32)) * 4;
+      return [frame.pixels[i], frame.pixels[i + 1], frame.pixels[i + 2]];
+    };
+    const warm = { tint: [1.0, 0.78, 0.45, 1.0] as [number, number, number, number] };
+    const first = rig.draw({ player: warm, platforms, whitePlatforms: true });
+    // Platforms are drawn before the player in a frame, so a tint left on after the first frame would show here.
+    const second = rig.draw({ player: warm, platforms, whitePlatforms: true });
+    const untinted = rig.draw({ player: { tint: [1, 1, 1, 0] }, platforms, whitePlatforms: true });
+    return {
+      firstPlayer: at(first, 0), firstPlatform: at(first, 3),
+      secondPlayer: at(second, 0), secondPlatform: at(second, 3),
+      untintedPlayer: at(untinted, 0),
+    };
+  });
+  const close = (actual: number[], expected: number[]) => {
+    for (let i = 0; i < 3; i++) expect(Math.abs(actual[i] - expected[i])).toBeLessThanOrEqual(2);
+  };
+  close(px.firstPlayer, [255, 199, 115]); // (1.0, 0.78, 0.45) * 255 on white
+  close(px.secondPlayer, [255, 199, 115]);
+  close(px.firstPlatform, [255, 255, 255]);
+  close(px.secondPlatform, [255, 255, 255]);
+  close(px.untintedPlayer, [255, 255, 255]);
+});
+
+test('a tint multiplies the sample, and desaturate swaps its own hue for the tint colour', async ({ page }) => {
+  await createRig(page);
+  const px = await page.evaluate(() => {
+    const rig = window.__rig!;
+    const centre = (frame: Frame) => {
+      const i = ((frame.height >> 1) * frame.width + (frame.width >> 1)) * 4;
+      return [frame.pixels[i], frame.pixels[i + 1], frame.pixels[i + 2]];
+    };
+    const draw = (tint: [number, number, number, number]) => centre(rig.draw({ player: { tint, color: 'red' } }));
+    return {
+      untinted: draw([1, 1, 1, 0]),
+      multiplied: draw([0.55, 0.95, 1.0, 0]), // cool tint, hue kept
+      recoloured: draw([1.0, 0.78, 0.45, 1.0]), // warm tint on the grey of red: luma 0.299
+    };
+  });
+  const close = (actual: number[], expected: number[]) => {
+    for (let i = 0; i < 3; i++) expect(Math.abs(actual[i] - expected[i])).toBeLessThanOrEqual(2);
+  };
+  close(px.untinted, [255, 0, 0]);
+  close(px.multiplied, [140, 0, 0]); // 0.55 * 255
+  close(px.recoloured, [76, 59, 34]); // 0.299 * (1.0, 0.78, 0.45) * 255
 });

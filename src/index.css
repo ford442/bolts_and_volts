@@ -28,3 +28,14 @@ body {
   display: flex;
   flex-direction: column;
 }
+
+/* Ability overlay (components/AbilityHud.tsx). The game loop sets --hud-accent and data-state on its root. */
+.ability-hud-state {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+[data-state='ready'] > div > .ability-hud-state { color: #7dff9b; }
+[data-state='active'] > div > .ability-hud-state { color: var(--hud-accent, #fff); }
+[data-state='cooldown'] > div > .ability-hud-state { color: #ff9f5a; }
+[data-state='cooldown'] .ability-hud-fill { opacity: 0.55; }

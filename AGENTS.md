@@ -50,7 +50,8 @@
 │   ├── main.tsx                # React root mount
 │   ├── components/
 │   │   ├── App.tsx             # Top-level layout (header, canvas, footer)
-│   │   └── GameCanvas.tsx      # Game loop, input handling, WASM init, renderer setup
+│   │   ├── GameCanvas.tsx      # Game loop, input handling, WASM init, renderer setup
+│   │   └── AbilityHud.tsx      # Ability overlay markup (filled per frame by game/abilityHud.ts, no React state)
 │   ├── gl/
 │   │   ├── renderer.ts         # WebGL2 renderer: sprite drawing, background, textures
 │   │   └── shaders/            # GLSL ES 3.0 shaders
@@ -68,7 +69,7 @@
 │   ├── background.png          # Parallax background texture
 │   ├── wazzy.png               # Standalone player sprite (unused)
 │   ├── background-music.mp3    # BGM
-│   ├── jump.mp3 / land.mp3     # SFX
+│   ├── jump / land / ground_pound / hover / switch .mp3  # SFX (the last three come from scripts/gen_sfx.py)
 │   └── ...
 ├── index.html                  # Entry HTML (no inline WASM script; loaded dynamically)
 ├── package.json                # npm scripts & deps
@@ -181,7 +182,7 @@ If `"camera"` is omitted, camera behavior stays backward-compatible and remains 
 - Volume slider in `GameCanvas` adjusts the `GainNode` gain.
 - The audio context is resumed on first keydown (browser autoplay policy).
 
-Sound events are triggered from C++ via `setSoundCallback` → JS callback. Supported names: `"jump"`, `"land"`.
+Sound events are triggered from C++ via `setSoundCallback` → JS callback. Supported names: `"jump"`, `"land"`, `"ground_pound"`, `"hover"`, `"switch"` (one `public/<name>.mp3` each; `SFX_URLS` in `GameCanvas.tsx` lists them). `playSfx` ignores a name with no buffer.
 
 ## Code Style Guidelines
 

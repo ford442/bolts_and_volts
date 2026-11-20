@@ -19,20 +19,20 @@ test.beforeEach(async ({ page }) => {
       checkDCE() {},
     };
   });
-  await routeWasmStub(page, { levelName: 'Render Count Level', movingPlayer: true });
+  await routeWasmStub(page, { levelName: 'Render Count Level', abilityState: 2, abilityCooldown: 1, drainingAbility: true });
   await page.goto('/');
   await expect(page.getByText('Render Count Level')).toBeVisible();
 });
 
 test('the game loop updates the HUD without re-rendering React every frame', async ({ page }) => {
-  const status = page.getByTestId('status-hud');
-  await expect(status).toContainText('[BOLTS] pos:');
+  const bar = page.getByRole('progressbar', { name: 'Ability cooldown' });
+  await expect(page.getByTestId('hud-character')).toHaveText('Bolts');
 
   const before = await page.evaluate(() => window.__commits);
-  const textBefore = await status.textContent();
-  // ~30 frames at 60 Hz; the stub moves the player every frame, so the HUD text changes every frame.
+  const valueBefore = await bar.getAttribute('aria-valuenow');
+  // ~30 frames at 60 Hz; the stub drains the cooldown every frame, so the HUD bar changes every frame.
   await page.waitForTimeout(500);
-  await expect(status).not.toHaveText(textBefore ?? '');
+  await expect(bar).not.toHaveAttribute('aria-valuenow', valueBefore ?? '');
   const after = await page.evaluate(() => window.__commits);
   expect(before).toBeGreaterThan(0); // the hook is wired up
   expect(after - before).toBeLessThanOrEqual(1);

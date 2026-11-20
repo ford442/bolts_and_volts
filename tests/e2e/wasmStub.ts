@@ -11,8 +11,13 @@ export type StubScene = {
   camera?: V;
   platforms?: Box[];
   goals?: Box[];
-  /** Move the player +0.1 in x on every captureFrame, so per-frame HUD text changes every frame. */
-  movingPlayer?: boolean;
+  /** Starting character (0 = Bolts, 1 = Volts); `switchCharacter()` toggles it. */
+  character?: number;
+  /** `AbilityState` (0 ready, 1 active, 2 cooldown) and the cooldown fraction reported in the snapshot. */
+  abilityState?: number;
+  abilityCooldown?: number;
+  /** Drain `abilityCooldown` by 0.01 on every captureFrame (wrapping at 0), so the HUD bar changes every frame. */
+  drainingAbility?: boolean;
 };
 
 /**
@@ -21,19 +26,21 @@ export type StubScene = {
  */
 export const wasmStubSource = (scene: StubScene): string => `
   const F = ${JSON.stringify(FRAME)};
-  const scene = ${JSON.stringify({ player: { x: -3, y: 1 }, camera: { x: 0, y: 0 }, platforms: [], goals: [], levelDescription: '', ...scene })};
+  const scene = ${JSON.stringify({ player: { x: -3, y: 1 }, camera: { x: 0, y: 0 }, platforms: [], goals: [], levelDescription: '', character: 0, abilityState: 0, abilityCooldown: 0, ...scene })};
   const HEAPF32 = new Float32Array(4096);
   const PTR_FLOATS = 16; // non-zero offset, like a real heap allocation
   class Game {
     update() {}
     handleInput() {}
     captureFrame() {
-      if (scene.movingPlayer) scene.player = { x: scene.player.x + 0.1, y: scene.player.y };
+      if (scene.drainingAbility) scene.abilityCooldown = scene.abilityCooldown > 0.011 ? scene.abilityCooldown - 0.01 : 1;
       const out = HEAPF32.subarray(PTR_FLOATS);
       out.fill(0, 0, F.HEADER_SIZE);
       out[F.PLAYER_X] = scene.player.x; out[F.PLAYER_Y] = scene.player.y;
       out[F.PLAYER_W] = 1; out[F.PLAYER_H] = 1;
       out[F.CAMERA_X] = scene.camera.x; out[F.CAMERA_Y] = scene.camera.y;
+      out[F.CHARACTER] = scene.character;
+      out[F.ABILITY_STATE] = scene.abilityState; out[F.ABILITY_COOLDOWN] = scene.abilityCooldown;
       out[F.PLATFORM_COUNT] = scene.platforms.length;
       out[F.GOAL_COUNT] = scene.goals.length;
       out[F.PARTICLE_COUNT] = 0;
@@ -52,11 +59,11 @@ export const wasmStubSource = (scene: StubScene): string => `
     setSoundCallback() {}
     loadLevel() {}
     setLevelCompleteCallback() {}
-    switchCharacter() {}
-    getCurrentCharacter() { return 0; }
+    switchCharacter() { scene.character = scene.character === 0 ? 1 : 0; }
+    getCurrentCharacter() { return scene.character; }
     useAbility() {}
-    getAbilityState() { return 0; }
-    getAbilityCooldownPercent() { return 0; }
+    getAbilityState() { return scene.abilityState; }
+    getAbilityCooldownPercent() { return scene.abilityCooldown; }
     delete() {}
   }
   export default async function createWasmModule() { return { Game, HEAPF32 }; }

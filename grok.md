@@ -73,7 +73,7 @@ TS/React (src/)
 │   ├── levels/test-1.json
 │   ├── wazzy_spritesheet.png (3 rows: idle/run/jump)
 │   ├── platform.png, background.png
-│   ├── *.mp3 (background-music, jump, land)
+│   ├── *.mp3 (background-music, jump, land, ground_pound, hover, switch)
 │   └── shaders/ (older copies, not used by current renderer)
 ├── package.json (scripts: dev/build:wasm/build:wasm:debug/build/preview; emcc flags in cpp/emscripten-*.response)
 ├── deploy.py (⚠️ hardcoded password)
@@ -125,7 +125,7 @@ python deploy.py   # uploads dist/ → go.1ink.us/platformer
 
 - **Animation + foot anchors**: The renderer computes per-frame vertical offsets from the spritesheet alpha to keep the 64×64 frames visually planted on the collision box. Changing the spritesheet layout or frame counts requires coordinated updates in `renderer.ts` (animationMap) and the C++ AnimationState logic.
 
-- **Audio callbacks**: `setSoundCallback` is how C++ requests "jump" or "land" SFX. The callback must be registered early and must not throw. Music is started by the TS side on first gesture.
+- **Audio callbacks**: `setSoundCallback` is how C++ requests SFX by name (`jump`, `land`, `ground_pound`, `hover`, `switch`). The callback must be registered early and must not throw. Music is started by the TS side on first gesture.
 
 - **Emscripten / WASM gotchas**:
   - `emcc` must be available; builds fail silently-ish if missing.
