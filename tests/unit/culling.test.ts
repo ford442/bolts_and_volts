@@ -61,5 +61,7 @@ describe('culling helpers', () => {
     stats.platforms = { drawn: 3, total: 40 };
     expect(formatCullStats(stats)).toContain('platforms 3/40');
     expect(formatCullStats(stats)).toContain('particles 0/0');
+    stats.entities = { drawn: 2, total: 5 };
+    expect(formatCullStats(stats)).toContain('entities 2/5');
   });
 });

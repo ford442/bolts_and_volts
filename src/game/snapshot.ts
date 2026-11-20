@@ -20,8 +20,15 @@ export const FRAME = {
   PLATFORM_COUNT: 12,
   GOAL_COUNT: 13,
   PARTICLE_COUNT: 14,
-  HEADER_SIZE: 16,
+  HAZARD_COUNT: 15,
+  /** 0 or 1. */
+  PAYLOAD_COUNT: 16,
+  TERMINAL_COUNT: 17,
+  HEADER_SIZE: 20,
+  /** Platforms and goals: x, y, w, h. */
   BOX_STRIDE: 4,
+  /** Hazards, payload, terminals: x, y, w, h, flag. */
+  ENTITY_STRIDE: 5,
   PARTICLE_STRIDE: 4,
 } as const;
 
@@ -33,6 +40,12 @@ export type AnimState = (typeof AnimState)[keyof typeof AnimState];
 export const AbilityState = { Ready: 0, Active: 1, Cooldown: 2 } as const;
 
 export interface Box { position: Vec2; size: Vec2; }
+
+/**
+ * A box with one state bit: hazard `enabled`, payload `carried`, terminal `used`. The renderer reads the flag;
+ * the simulation owns it.
+ */
+export interface FlagBox extends Box { flag: boolean; }
 
 export interface ParticleView {
   position: Vec2;
@@ -60,6 +73,12 @@ export interface FrameState {
   abilityCooldown: number;
   platforms: Box[];
   goals: Box[];
+  /** `flag`: enabled (a disabled hazard is harmless). */
+  hazards: FlagBox[];
+  /** Zero or one entry. `flag`: carried. */
+  payloads: FlagBox[];
+  /** `flag`: used. */
+  terminals: FlagBox[];
   particles: ParticleView[];
 }
 
@@ -72,6 +91,9 @@ export const createFrameState = (): FrameState => ({
   abilityCooldown: 0,
   platforms: [],
   goals: [],
+  hazards: [],
+  payloads: [],
+  terminals: [],
   particles: [],
 });
 
@@ -89,6 +111,21 @@ const readBoxes = (data: Float32Array, offset: number, count: number, out: Box[]
   return offset + count * FRAME.BOX_STRIDE;
 };
 
+const readFlagBoxes = (data: Float32Array, offset: number, count: number, out: FlagBox[]): number => {
+  for (let i = 0; i < count; i++) {
+    const o = offset + i * FRAME.ENTITY_STRIDE;
+    let box = out[i];
+    if (!box) out[i] = box = { position: { x: 0, y: 0 }, size: { x: 0, y: 0 }, flag: false };
+    box.position.x = data[o];
+    box.position.y = data[o + 1];
+    box.size.x = data[o + 2];
+    box.size.y = data[o + 3];
+    box.flag = data[o + 4] !== 0;
+  }
+  out.length = count;
+  return offset + count * FRAME.ENTITY_STRIDE;
+};
+
 /**
  * Decode a snapshot into `out`. `data` must start at the snapshot header (see `viewFrame`).
  * Throws if the buffer is shorter than its own header claims.
@@ -98,7 +135,13 @@ export const readFrame = (data: Float32Array, out: FrameState): FrameState => {
   const platformCount = data[FRAME.PLATFORM_COUNT];
   const goalCount = data[FRAME.GOAL_COUNT];
   const particleCount = data[FRAME.PARTICLE_COUNT];
-  const expected = FRAME.HEADER_SIZE + (platformCount + goalCount) * FRAME.BOX_STRIDE + particleCount * FRAME.PARTICLE_STRIDE;
+  const hazardCount = data[FRAME.HAZARD_COUNT];
+  const payloadCount = data[FRAME.PAYLOAD_COUNT];
+  const terminalCount = data[FRAME.TERMINAL_COUNT];
+  const expected = FRAME.HEADER_SIZE
+    + (platformCount + goalCount) * FRAME.BOX_STRIDE
+    + (hazardCount + payloadCount + terminalCount) * FRAME.ENTITY_STRIDE
+    + particleCount * FRAME.PARTICLE_STRIDE;
   if (data.length < expected) throw new Error(`frame snapshot truncated: ${data.length} < ${expected} floats`);
 
   out.player.position.x = data[FRAME.PLAYER_X];
@@ -117,6 +160,9 @@ export const readFrame = (data: Float32Array, out: FrameState): FrameState => {
   let offset: number = FRAME.HEADER_SIZE;
   offset = readBoxes(data, offset, platformCount, out.platforms);
   offset = readBoxes(data, offset, goalCount, out.goals);
+  offset = readFlagBoxes(data, offset, hazardCount, out.hazards);
+  offset = readFlagBoxes(data, offset, payloadCount, out.payloads);
+  offset = readFlagBoxes(data, offset, terminalCount, out.terminals);
 
   const particles = out.particles;
   for (let i = 0; i < particleCount; i++) {

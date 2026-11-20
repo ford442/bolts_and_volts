@@ -12,7 +12,7 @@ Verified against the loaders as of this writing:
 
 1. `GameCanvas` fetches `/levels/manifest.json`, then `/levels/<file>` for the selected entry.
 2. `normalizeLevelData` validates the JSON and splits it in two:
-   - **Core level** (`name`, `description`, `spawn`, `bounds`, `camera`, `platforms`, `goals`) is passed to C++ via `Game::loadLevel`. Only these whitelisted keys reach WASM.
+   - **Core level** (`name`, `description`, `spawn`, `bounds`, `camera`, `platforms`, `goals`, `hazards`, `payload`, `terminals`) is passed to C++ via `Game::loadLevel`. Only these whitelisted keys reach WASM, as plain numbers (C++ never parses JSON).
    - **TS-only data** (`backgroundLayers`, `decor`, per-platform `visual`, `author`) stays in the renderer/UI layer. C++ never sees it.
 3. Parsing is **lenient**: malformed entries are skipped or defaulted rather than rejected, so a broken level still boots.
 4. `validateLevel` (`src/lib/levelValidator.ts`) walks the same JSON and reports everything the loader dropped or defaulted. Each message has the form
@@ -23,7 +23,7 @@ Verified against the loaders as of this writing:
 
 - World units, not pixels. The viewport is 10 world units wide (height follows aspect ratio).
 - **+Y is up**, +X is right. There is no fixed origin; `(0, 0)` is just a convention. Existing levels put the spawn ground near `y = -3`.
-- `position` for platforms, goals and decor is the **center** of the rectangle; `size` is full width/height.
+- `position` for platforms, goals, hazards, the payload, terminals and decor is the **center** of the rectangle; `size` is full width/height.
 - Texture/`uv` rectangles are in **source-image pixels**.
 
 ## Top-level fields
@@ -37,7 +37,10 @@ Verified against the loaders as of this writing:
 | `bounds` | no* | `{min:{x,y}, max:{x,y}}` | C++ | Clamps the **camera** (not the player). Both `min` and `max` are required for it to apply. Omit → camera unclamped. |
 | `camera` | no | object | C++ | See below. |
 | `platforms` | effectively yes | array | C++ + renderer | If missing/empty/all-invalid, a **built-in fallback platform set** is loaded instead. |
-| `goals` | no | array | C++ | Touching one completes the level. |
+| `goals` | no | array | C++ | Touching one completes the level (while carrying the `payload`, if the level has one). |
+| `hazards` | no | array | C++ + renderer | Touching one respawns the player. Optional patrol. |
+| `payload` | no | object | C++ + renderer | One pickup. When present, goals only complete while it is carried. |
+| `terminals` | no | array | C++ + renderer | Volts + `E` disables a hazard. |
 | `backgroundLayers` | no | array | renderer | Parallax and/or world-space painted layers. Default: single `./background.png` parallax layer. |
 | `decor` | no | array | renderer | Default: none. |
 
@@ -56,6 +59,55 @@ Visual flags are index-aligned with *valid* platforms (invalid entries are dropp
 ### `goals[]`
 
 Same shape as a platform without `visual`: `position` + `size`, both required. Goals do not need a platform under them. Duplicated goals each trigger independently.
+
+### `hazards[]`
+
+| Field | Required | Type | Notes |
+|---|---|---|---|
+| `position` | yes | `{x, y}` | Center. Entry is skipped if missing or non-finite. |
+| `size` | yes | `{x, y}` | Width, height. |
+| `patrol` | no | `{x0, x1, speed}` | Moves along x between `x0` and `x1` at a constant `speed` (units/s), turning at each end. All three must be finite numbers or the hazard is static. `x0 > x1` is swapped, a negative `speed` uses its absolute value, `position.x` outside the range is clamped into it, and `speed: 0` is static. |
+| `label` | no | string | Author note; ignored. |
+
+Hazards are triggers, not solid: an **overlap** (touching edges do not count) puts the player back at `spawn` at rest, ends any active ability (ready again), and returns a carried payload to its pad. Hazards, terminals and goals keep their state through a respawn; only a level load (`R`, level switch) resets them. A hazard a terminal has disabled stops moving and is drawn faded. First art is a tinted quad (red; grey when off).
+
+Hazards are indexed by position among the **valid** entries (like platform `visual` flags): an entry the loader skips does not take an index, and the validator says when that shifts a terminal's target.
+
+### `payload`
+
+| Field | Required | Type | Notes |
+|---|---|---|---|
+| `position` | yes | `{x, y}` | Center of the pad it starts on (and returns to). |
+| `size` | yes | `{x, y}` | Width, height. |
+| `label` | no | string | Author note; ignored. |
+
+A single object, not an array. Overlap picks it up; it then rides centred on top of the player's collision box and collides with nothing. Dying or reloading puts it back at `position`. **With a payload, the level's goals only fire while it is carried** (once per goal, as usual). Without one, touching a goal completes the level as before, so `test-1`, `demo-decor` and `demo-pano` are unchanged. If either vector is invalid the payload is ignored, and the goals go back to plain touch.
+
+### `terminals[]`
+
+| Field | Required | Type | Notes |
+|---|---|---|---|
+| `position` | yes | `{x, y}` | Center. |
+| `size` | yes | `{x, y}` | Width, height. |
+| `disablesHazard` | yes | integer ≥ 0 | Index into the valid `hazards`. A missing or non-integer value skips the terminal; an index past the end makes it do nothing. |
+| `label` | no | string | Author note; ignored. |
+
+Pressing the ability key (`E`) while **Volts** overlaps an unused terminal disables that hazard for the rest of the level load and marks the terminal used (drawn green, then dim). That press is the terminal's: it works on the ground or in the air, and while hover is on cooldown, and it does not start a hover or touch the cooldown. Away from a terminal, or at a used one, `E` is the ability as before. Bolts at a terminal gets no terminal effect: `E` stays the ground pound, which only works airborne.
+
+Example (from `public/levels/courier-1.json`):
+
+```json
+"hazards": [
+  { "position": { "x": 10.0, "y": -2.55 }, "size": { "x": 0.7, "y": 0.5 }, "patrol": { "x0": 8.0, "x1": 12.0, "speed": 1.2 } },
+  { "position": { "x": 20.0, "y": -1.0 }, "size": { "x": 0.4, "y": 3.6 } }
+],
+"payload": { "position": { "x": 3.0, "y": -2.6 }, "size": { "x": 0.4, "y": 0.4 } },
+"terminals": [
+  { "position": { "x": 17.0, "y": -2.4 }, "size": { "x": 0.6, "y": 0.8 }, "disablesHazard": 1 }
+]
+```
+
+The validator reports: unknown keys (with typo suggestions), bad vectors, a non-object `patrol` or non-numeric patrol fields, swapped endpoints, negative or zero patrol speed, a patrolling `position.x` outside its range, a terminal target that is missing, not an integer, out of range, or shifted by a skipped hazard, and a payload with no goals to deliver to.
 
 ### `camera`
 
@@ -200,6 +252,8 @@ Condensed from `public/levels/demo-decor.json` (see that file for the full level
   "goals": [ { "position": { "x": 49.0, "y": 1.6 }, "size": { "x": 1.5, "y": 1.2 } } ]
 }
 ```
+
+`public/levels/courier-1.json` is the reference for hazards, a payload and a terminal.
 
 `public/levels/test-1.json` is the reference for a pure-collision level: it uses only `name`, `description`, `spawn`, `bounds`, `platforms` (with `label`) and `goals`.
 

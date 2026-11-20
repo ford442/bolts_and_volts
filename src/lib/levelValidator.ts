@@ -28,10 +28,17 @@ const isRecord = (value: unknown): value is JsonRecord =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 const isFiniteNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 
-const TOP_LEVEL_KEYS = ['name', 'description', 'author', 'spawn', 'bounds', 'camera', 'platforms', 'goals', 'backgroundLayers', 'decor'];
+const TOP_LEVEL_KEYS = [
+  'name', 'description', 'author', 'spawn', 'bounds', 'camera', 'platforms', 'goals',
+  'hazards', 'payload', 'terminals', 'backgroundLayers', 'decor',
+];
 const PLATFORM_KEYS = ['position', 'size', 'visual', 'label'];
 const GOAL_KEYS = ['position', 'size', 'label'];
 const CAMERA_KEYS = ['followY', 'verticalDeadzone', 'lookAheadY'];
+const HAZARD_KEYS = ['position', 'size', 'patrol', 'label'];
+const PATROL_KEYS = ['x0', 'x1', 'speed'];
+const PAYLOAD_KEYS = ['position', 'size', 'label'];
+const TERMINAL_KEYS = ['position', 'size', 'disablesHazard', 'label'];
 const BACKGROUND_LAYER_KEYS = [
   'image', 'mode', 'scrollFactorX', 'scrollFactorY', 'scale', 'offsetY',
   'position', 'size', 'parallaxX', 'parallaxY', 'label',
@@ -271,6 +278,106 @@ export const validateLevel = (level: unknown): LevelIssue[] => {
         add('warning', `${path}.position`, 'a point inside bounds', `(${position.x}, ${position.y}) outside bounds`, 'goal may be unreachable by the camera');
       }
     });
+  }
+
+  // --- hazards (optional) ---
+  // Index of each hazard the loader keeps, by array position (null: dropped). Terminals target kept hazards only.
+  const keptHazardIndex: (number | null)[] = [];
+  if (level.hazards !== undefined) {
+    if (!Array.isArray(level.hazards)) {
+      add('error', 'hazards', 'array of { position, size, patrol? }', level.hazards, 'hazards ignored');
+    } else {
+      let kept = 0;
+      level.hazards.forEach((item: unknown, index: number) => {
+        const path = `hazards[${index}]`;
+        if (!isRecord(item)) {
+          add('error', path, 'object { position, size, patrol? }', item, 'entry skipped');
+          keptHazardIndex.push(null);
+          return;
+        }
+        checkUnknownKeys(path, item, HAZARD_KEYS);
+        const position = checkVec2(`${path}.position`, item.position, 'error', 'entry skipped');
+        const size = checkVec2(`${path}.size`, item.size, 'error', 'entry skipped');
+        keptHazardIndex.push(position && size ? kept++ : null);
+        if (size && (size.x <= 0 || size.y <= 0)) {
+          add('warning', `${path}.size`, 'width and height > 0', `(${size.x}, ${size.y})`, 'hazard has no area to touch');
+        }
+        if (item.patrol === undefined) return;
+        const patrolPath = `${path}.patrol`;
+        if (!isRecord(item.patrol)) {
+          add('warning', patrolPath, '{ "x0": number, "x1": number, "speed": number }', item.patrol, 'ignored, hazard is static');
+          return;
+        }
+        const patrol = item.patrol;
+        checkUnknownKeys(patrolPath, patrol, PATROL_KEYS);
+        let patrolOk = true;
+        for (const key of PATROL_KEYS) {
+          if (!isFiniteNumber(patrol[key])) {
+            add('warning', `${patrolPath}.${key}`, 'finite number', patrol[key], 'patrol ignored, hazard is static');
+            patrolOk = false;
+          }
+        }
+        if (!patrolOk) return;
+        const x0 = patrol.x0 as number;
+        const x1 = patrol.x1 as number;
+        const speed = patrol.speed as number;
+        if (x0 > x1) add('warning', patrolPath, 'x0 <= x1', `x0 ${x0}, x1 ${x1}`, 'endpoints swapped');
+        if (speed < 0) add('warning', `${patrolPath}.speed`, 'number >= 0', `number ${speed}`, 'using its absolute value');
+        if (speed === 0) add('warning', `${patrolPath}.speed`, 'number > 0 for a patrol', 'number 0', 'hazard is static');
+        if (speed !== 0 && position && (position.x < Math.min(x0, x1) || position.x > Math.max(x0, x1))) {
+          add('warning', `${path}.position.x`, `a value in [${Math.min(x0, x1)}, ${Math.max(x0, x1)}]`, `number ${position.x}`, 'clamped into the patrol range');
+        }
+      });
+    }
+  }
+
+  // --- payload (optional) ---
+  if (level.payload !== undefined) {
+    if (!isRecord(level.payload)) {
+      add('error', 'payload', 'object { position, size }', level.payload, 'payload ignored, goals complete on touch');
+    } else {
+      checkUnknownKeys('payload', level.payload, PAYLOAD_KEYS);
+      const position = checkVec2('payload.position', level.payload.position, 'error', 'payload ignored, goals complete on touch');
+      const size = checkVec2('payload.size', level.payload.size, 'error', 'payload ignored, goals complete on touch');
+      if (size && (size.x <= 0 || size.y <= 0)) {
+        add('warning', 'payload.size', 'width and height > 0', `(${size.x}, ${size.y})`, 'payload can never be picked up, so the level cannot be completed');
+      }
+      if (position && size && !(Array.isArray(level.goals) && level.goals.length > 0)) {
+        add('warning', 'payload', 'at least one goal to deliver it to', 'a payload with no goals', 'the payload has nowhere to go');
+      }
+    }
+  }
+
+  // --- terminals (optional) ---
+  if (level.terminals !== undefined) {
+    if (!Array.isArray(level.terminals)) {
+      add('error', 'terminals', 'array of { position, size, disablesHazard }', level.terminals, 'terminals ignored');
+    } else {
+      const keptHazards = keptHazardIndex.filter((i) => i !== null).length;
+      level.terminals.forEach((item: unknown, index: number) => {
+        const path = `terminals[${index}]`;
+        if (!isRecord(item)) {
+          add('error', path, 'object { position, size, disablesHazard }', item, 'entry skipped');
+          return;
+        }
+        checkUnknownKeys(path, item, TERMINAL_KEYS);
+        checkVec2(`${path}.position`, item.position, 'error', 'entry skipped');
+        const size = checkVec2(`${path}.size`, item.size, 'error', 'entry skipped');
+        if (size && (size.x <= 0 || size.y <= 0)) {
+          add('warning', `${path}.size`, 'width and height > 0', `(${size.x}, ${size.y})`, 'terminal can never be reached');
+        }
+        const target = item.disablesHazard;
+        if (!(typeof target === 'number' && Number.isInteger(target) && target >= 0)) {
+          add('error', `${path}.disablesHazard`, 'integer index into hazards (>= 0)', target, 'entry skipped');
+        } else if (target >= keptHazards) {
+          add('warning', `${path}.disablesHazard`, `an index below ${keptHazards} (the number of valid hazards)`, `number ${target}`, 'terminal disables nothing');
+        } else if (keptHazardIndex.indexOf(target) !== target) {
+          // Some hazards before it were dropped, so the index no longer means the array position the author sees.
+          const arrayIndex = keptHazardIndex.indexOf(target);
+          add('warning', `${path}.disablesHazard`, 'an index that ignores no dropped hazards', `number ${target}`, `targets hazards[${arrayIndex}] because invalid hazards before it are skipped`);
+        }
+      });
+    }
   }
 
   // --- backgroundLayers (optional) ---

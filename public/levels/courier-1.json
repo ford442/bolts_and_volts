@@ -1,0 +1,24 @@
+{
+  "name": "Courier Run - Special Delivery",
+  "description": "Grab the package and carry it to the drop-off. Hop the patrolling cat, and let Volts (C to switch) open the laser gate at the terminal with E. Touching a hazard sends you and the package back to the start.",
+  "author": "Core Team",
+  "spawn": { "x": -2.0, "y": -1.5 },
+  "bounds": { "min": { "x": -2.0, "y": -1.5 }, "max": { "x": 31.0, "y": 4.0 } },
+  "camera": { "followY": true, "verticalDeadzone": 0.9, "lookAheadY": 0.6 },
+  "platforms": [
+    { "position": { "x": 14.0, "y": -3.0 }, "size": { "x": 40.0, "y": 0.4 }, "label": "street" },
+    { "position": { "x": 30.5, "y": -2.2 }, "size": { "x": 3.0, "y": 0.24 }, "label": "drop-off-step" }
+  ],
+  "payload": { "position": { "x": 3.0, "y": -2.6 }, "size": { "x": 0.4, "y": 0.4 }, "label": "package" },
+  "hazards": [
+    { "position": { "x": 10.0, "y": -2.55 }, "size": { "x": 0.7, "y": 0.5 }, "patrol": { "x0": 8.0, "x1": 12.0, "speed": 1.2 }, "label": "space-cat" },
+    { "position": { "x": 20.0, "y": -1.0 }, "size": { "x": 0.4, "y": 3.6 }, "label": "laser-gate" },
+    { "position": { "x": 25.0, "y": -2.55 }, "size": { "x": 0.7, "y": 0.5 }, "patrol": { "x0": 23.0, "x1": 27.0, "speed": 1.6 }, "label": "space-cat-2" }
+  ],
+  "terminals": [
+    { "position": { "x": 17.0, "y": -2.4 }, "size": { "x": 0.6, "y": 0.8 }, "disablesHazard": 1, "label": "gate-terminal" }
+  ],
+  "goals": [
+    { "position": { "x": 30.5, "y": -1.4 }, "size": { "x": 1.2, "y": 1.2 } }
+  ]
+}

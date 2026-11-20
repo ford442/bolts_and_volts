@@ -5,7 +5,11 @@ import { expect, test, type Page } from '@playwright/test';
 
 type Frame = { width: number; height: number; pixels: number[] };
 type Rig = {
-  renderer: { resize(size: { width: number; height: number; pixelRatio: number }): void; setCollisionDebug(on: boolean): void };
+  renderer: {
+    resize(size: { width: number; height: number; pixelRatio: number }): void;
+    setCollisionDebug(on: boolean): void;
+    getCullStats(): { entities: { drawn: number; total: number } };
+  };
   canvas: HTMLCanvasElement;
   gl: WebGL2RenderingContext;
   /**
@@ -18,6 +22,8 @@ type Rig = {
     platforms?: unknown[];
     player?: { tint: [number, number, number, number]; color?: 'white' | 'red' };
     whitePlatforms?: boolean;
+    /** Hazards / payload / terminals, as `drawScene`'s `entities` (`{ position, size, flag }` boxes). */
+    entities?: { hazards?: unknown[]; payloads?: unknown[]; terminals?: unknown[] };
   }): Frame;
 };
 declare global {
@@ -54,7 +60,8 @@ async function createRig(page: Page) {
         { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 1, y: 1 },
         (opts.platforms ?? []) as never[], [], opts.player ? (opts.player.color === 'red' ? red : white) : null, opts.whitePlatforms ? white : null, [],
         { distant: [], mid: [], foreground: [] }, [], opts.player ? { state: 0, frame: 0, facingLeft: false } : null,
-        (opts.goals ?? []) as never[], opts.player?.tint, null, false
+        (opts.goals ?? []) as never[], opts.player?.tint, null, false,
+        { hazards: [], payloads: [], terminals: [], ...opts.entities } as never
       );
       // The drawing buffer is only valid until the end of the task, so read it back right away.
       const pixels = new Uint8Array(canvas.width * canvas.height * 4);
@@ -223,4 +230,36 @@ test('a tint multiplies the sample, and desaturate swaps its own hue for the tin
   close(px.untinted, [255, 0, 0]);
   close(px.multiplied, [140, 0, 0]); // 0.55 * 255
   close(px.recoloured, [76, 59, 34]); // 0.299 * (1.0, 0.78, 0.45) * 255
+});
+
+test('hazards, terminals and the payload draw as flat quads, faded once switched off, the payload over the player', async ({ page }) => {
+  await createRig(page);
+  const px = await page.evaluate(() => {
+    const rig = window.__rig!;
+    const at = (frame: Frame, worldX: number) => {
+      const i = ((frame.height >> 1) * frame.width + (frame.width >> 1) + Math.round(worldX * 32)) * 4;
+      return [frame.pixels[i], frame.pixels[i + 1], frame.pixels[i + 2]];
+    };
+    const box = (x: number, flag: boolean) => ({ position: { x, y: 0 }, size: { x: 1, y: 1 }, flag });
+    const white = { tint: [1, 1, 1, 0] as [number, number, number, number] };
+    const live = rig.draw({ player: white, entities: { hazards: [box(-3, true)], terminals: [box(3, false)], payloads: [box(0, true)] } });
+    const liveStats = { ...rig.renderer.getCullStats().entities };
+    const off = rig.draw({ entities: { hazards: [box(-3, false), box(40, true)], terminals: [box(3, true)] } });
+    const offStats = { ...rig.renderer.getCullStats().entities };
+    return {
+      hazard: at(live, -3), terminal: at(live, 3), payload: at(live, 0),
+      hazardOff: at(off, -3), terminalUsed: at(off, 3), liveStats, offStats,
+    };
+  });
+  const close = (actual: number[], expected: number[]) => {
+    for (let i = 0; i < 3; i++) expect(Math.abs(actual[i] - expected[i])).toBeLessThanOrEqual(3);
+  };
+  // Colour * alpha + the 0.1-grey clear colour (25.5) * (1 - alpha), for the Renderer's entity textures.
+  close(px.hazard, [233, 66, 39]);
+  close(px.terminal, [66, 215, 111]);
+  close(px.payload, [215, 155, 70]); // opaque, and drawn after the white player
+  close(px.hazardOff, [65, 65, 65]);
+  close(px.terminalUsed, [44, 77, 61]);
+  expect(px.liveStats).toEqual({ drawn: 3, total: 3 });
+  expect(px.offStats).toEqual({ drawn: 2, total: 3 }); // the hazard at x = 40 is culled
 });

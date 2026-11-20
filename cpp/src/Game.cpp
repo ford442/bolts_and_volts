@@ -30,6 +30,46 @@ void readBoxes(const val& list, std::vector<Platform>& out) {
     }
 }
 
+bool readBox(const val& entry, Vec2& position, Vec2& size) {
+    return hasField(entry, "position") && hasField(entry, "size") &&
+        readVec2(entry["position"], position) && readVec2(entry["size"], size);
+}
+
+// `[{ position, size, patrol?: { x0, x1, speed } }, ...]`. Without a complete patrol the hazard is static. Entries
+// missing position or size are skipped, so terminal `disablesHazard` indices count only the kept ones (the
+// TypeScript normalizer has already dropped bad entries the same way).
+void readHazards(const val& list, std::vector<Hazard>& out) {
+    if (list.isNull() || list.isUndefined()) return;
+    const unsigned length = list["length"].as<unsigned>();
+    for (unsigned i = 0; i < length; ++i) {
+        const val entry = list[i];
+        Hazard hazard{};
+        if (!readBox(entry, hazard.position, hazard.size)) continue;
+        hazard.x0 = hazard.x1 = hazard.position.x;
+        if (hasField(entry, "patrol")) {
+            const val patrol = entry["patrol"];
+            if (hasField(patrol, "x0") && hasField(patrol, "x1") && hasField(patrol, "speed")) {
+                hazard.x0 = patrol["x0"].as<float>();
+                hazard.x1 = patrol["x1"].as<float>();
+                hazard.speed = patrol["speed"].as<float>();
+            }
+        }
+        out.push_back(hazard);
+    }
+}
+
+void readTerminals(const val& list, std::vector<Terminal>& out) {
+    if (list.isNull() || list.isUndefined()) return;
+    const unsigned length = list["length"].as<unsigned>();
+    for (unsigned i = 0; i < length; ++i) {
+        const val entry = list[i];
+        Terminal terminal{};
+        if (!readBox(entry, terminal.position, terminal.size)) continue;
+        terminal.targetHazard = hasField(entry, "disablesHazard") ? entry["disablesHazard"].as<int>() : -1;
+        out.push_back(terminal);
+    }
+}
+
 std::string readString(const val& object, const char* key, const char* fallback) {
     if (hasField(object, key)) {
         const val value = object[key];
@@ -83,6 +123,12 @@ void Game::loadLevel(const val& level) {
     if (hasField(level, "spawn") && readVec2(level["spawn"], spawn)) spec.spawn = spawn;
     if (hasField(level, "platforms")) readBoxes(level["platforms"], spec.platforms);
     if (hasField(level, "goals")) readBoxes(level["goals"], spec.goals);
+    if (hasField(level, "hazards")) readHazards(level["hazards"], spec.hazards);
+    if (hasField(level, "terminals")) readTerminals(level["terminals"], spec.terminals);
+    if (hasField(level, "payload")) {
+        Payload payload{};
+        if (readBox(level["payload"], payload.position, payload.size)) spec.payload = payload;
+    }
 
     if (hasField(level, "bounds")) {
         const val bounds = level["bounds"];
@@ -149,6 +195,9 @@ void Game::dispatchEvents() {
             case SimEventType::PoundImpact:
             case SimEventType::HoverTick:
             case SimEventType::Running:
+            case SimEventType::Respawned:
+            case SimEventType::PayloadPickedUp:
+            case SimEventType::TerminalUsed:
                 break;
         }
     }
@@ -169,11 +218,16 @@ int Game::captureFrame() {
     using namespace FrameLayout;
     const std::vector<Platform>& platforms = sim.platforms();
     const std::vector<Platform>& goals = sim.goals();
+    const std::vector<Hazard>& hazards = sim.hazards();
+    const std::optional<Payload>& payload = sim.payload();
+    const std::vector<Terminal>& terminals = sim.terminals();
     const std::vector<Particle>& particles = particleSystem.getParticles();
     const PlayerBody& player = sim.player();
     const AnimationState& animation = sim.animation();
+    const size_t payloadCount = payload ? 1 : 0;
     const size_t length = HEADER_SIZE
         + (platforms.size() + goals.size()) * BOX_STRIDE
+        + (hazards.size() + payloadCount + terminals.size()) * ENTITY_STRIDE
         + particles.size() * PARTICLE_STRIDE;
     frameBuffer.resize(length);
     float* out = frameBuffer.data();
@@ -193,7 +247,10 @@ int Game::captureFrame() {
     out[PLATFORM_COUNT] = static_cast<float>(platforms.size());
     out[GOAL_COUNT] = static_cast<float>(goals.size());
     out[PARTICLE_COUNT] = static_cast<float>(particles.size());
-    out[15] = 0.0f;
+    out[HAZARD_COUNT] = static_cast<float>(hazards.size());
+    out[PAYLOAD_COUNT] = static_cast<float>(payloadCount);
+    out[TERMINAL_COUNT] = static_cast<float>(terminals.size());
+    for (int slot = TERMINAL_COUNT + 1; slot < HEADER_SIZE; ++slot) out[slot] = 0.0f;
 
     float* cursor = out + HEADER_SIZE;
     for (const std::vector<Platform>* boxes : { &platforms, &goals }) {
@@ -205,6 +262,17 @@ int Game::captureFrame() {
             cursor += BOX_STRIDE;
         }
     }
+    const auto writeEntity = [&cursor](const Vec2& position, const Vec2& size, bool flag) {
+        cursor[0] = position.x;
+        cursor[1] = position.y;
+        cursor[2] = size.x;
+        cursor[3] = size.y;
+        cursor[4] = flag ? 1.0f : 0.0f;
+        cursor += ENTITY_STRIDE;
+    };
+    for (const Hazard& h : hazards) writeEntity(h.position, h.size, h.enabled);
+    if (payload) writeEntity(payload->position, payload->size, payload->carried);
+    for (const Terminal& t : terminals) writeEntity(t.position, t.size, t.used);
     for (const Particle& p : particles) {
         cursor[0] = p.position.x;
         cursor[1] = p.position.y;

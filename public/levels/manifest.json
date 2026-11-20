@@ -20,6 +20,13 @@
       "name": "Painted Panorama Demo",
       "description": "World-space painted background with platforms aligned to its ledges, ramp and landmarks.",
       "author": "Core Team"
+    },
+    {
+      "id": "courier-1",
+      "file": "courier-1.json",
+      "name": "Courier Run - Special Delivery",
+      "description": "Carry the package past a patrolling cat and a laser gate only Volts can open.",
+      "author": "Core Team"
     }
   ]
 }

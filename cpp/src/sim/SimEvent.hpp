@@ -14,7 +14,10 @@ enum class SimEventType {
     HoverTick,         // one tick of hover gravity was applied
     Running,           // one grounded tick with horizontal speed
     CharacterSwitched,
-    GoalReached,       // first overlap with a goal; once per goal per level load
+    GoalReached,       // first overlap with a goal (while carrying the payload, if the level has one); once per goal per level load
+    Respawned,         // touched an enabled hazard; position is where, the player is already back at spawn
+    PayloadPickedUp,   // first overlap with the payload since it was last on its pad
+    TerminalUsed,      // Volts used a terminal (its target hazard, if any, is now disabled)
 };
 
 struct SimEvent {

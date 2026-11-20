@@ -1,5 +1,5 @@
 import type { Vec2, Platform } from '../wasm/loader';
-import { AnimState, type ParticleView, type PlayerAnimation } from '../game/snapshot';
+import { AnimState, type FlagBox, type ParticleView, type PlayerAnimation } from '../game/snapshot';
 import { VIEW_WORLD_WIDTH, gridLineIndices, type AuthoringOverlay } from '../lib/authoring';
 import type { CanvasSize } from '../lib/canvasSize';
 import {
@@ -24,6 +24,17 @@ const AUTHORING_DIM_ALPHA = 0.3;
  */
 export type Tint = readonly [r: number, g: number, b: number, desaturate: number];
 export const NO_TINT: Tint = [1, 1, 1, 0];
+
+/** Courier entities from the frame snapshot. The arrays are the snapshot's own (refilled in place every frame). */
+export type SceneEntities = {
+  /** `flag`: enabled. */
+  hazards: FlagBox[];
+  /** Zero or one entry; `flag`: carried. */
+  payloads: FlagBox[];
+  /** `flag`: used. */
+  terminals: FlagBox[];
+};
+export const NO_ENTITIES: SceneEntities = { hazards: [], payloads: [], terminals: [] };
 
 export type TextureObject = {
   texture: WebGLTexture;
@@ -161,6 +172,14 @@ export class Renderer {
   private debugGreenTexture: TextureObject | null = null;
   private whiteTexture: TextureObject | null = null;
   private debugCyanTexture: TextureObject | null = null; // used for goal visualization (playability win)
+  // First art for the courier entities: flat tinted quads (one 1x1 texture per state).
+  private entityTextures: {
+    hazard: TextureObject;
+    hazardOff: TextureObject;
+    payload: TextureObject;
+    terminal: TextureObject;
+    terminalUsed: TextureObject;
+  } | null = null;
   // World-space view and the sprite projection, rebuilt on resize (never per sprite).
   private view = { worldWidth: VIEW_WORLD_WIDTH, worldHeight: VIEW_WORLD_WIDTH };
   private projection = new Float32Array(16);
@@ -224,6 +243,13 @@ export class Renderer {
     this.debugGreenTexture = this.createSolidTexture([0, 255, 0, 128]);
     this.whiteTexture = this.createSolidTexture([255, 255, 255, 255]);
     this.debugCyanTexture = this.createSolidTexture([0, 255, 255, 170]); // cyan goals (visible target)
+    this.entityTextures = {
+      hazard: this.createSolidTexture([255, 70, 40, 230]),
+      hazardOff: this.createSolidTexture([150, 150, 150, 80]),
+      payload: this.createSolidTexture([215, 155, 70, 255]),
+      terminal: this.createSolidTexture([70, 235, 120, 230]),
+      terminalUsed: this.createSolidTexture([60, 120, 90, 140]),
+    };
     this.authoringTextures = {
       gridMinor: this.createSolidTexture([255, 255, 255, 70]),
       gridMajor: this.createSolidTexture([255, 255, 255, 150]),
@@ -566,7 +592,8 @@ export class Renderer {
     goals: Platform[] = [],
     playerTint: Tint = NO_TINT,
     authoring: AuthoringOverlay | null = null,
-    cullDebug: boolean = false
+    cullDebug: boolean = false,
+    entities: SceneEntities = NO_ENTITIES
   ) {
     this.gl.clearColor(0.1, 0.1, 0.1, 1.0);
     this.gl.clear(this.gl.COLOR_BUFFER_BIT);
@@ -623,6 +650,20 @@ export class Renderer {
       }
     }
 
+    // Terminals and hazards: triggers, drawn like goals (over platforms, under the player). Disabled hazards and
+    // used terminals stay visible but faded, so the player can see what the terminal did.
+    const entityTextures = this.entityTextures;
+    stats.entities.total = entities.hazards.length + entities.payloads.length + entities.terminals.length;
+    const drawEntity = (box: FlagBox, texture: TextureObject) => {
+      if (!boxOverlapsRect(box.position, box.size, cullRect)) return;
+      stats.entities.drawn++;
+      this.drawSprite(box.position, box.size, texture, { x: 1, y: 1 }, { x: 1, y: 1 }, { x: 0, y: 0 }, false, 0, false);
+    };
+    if (entityTextures) {
+      for (const terminal of entities.terminals) drawEntity(terminal, terminal.flag ? entityTextures.terminalUsed : entityTextures.terminal);
+      for (const hazard of entities.hazards) drawEntity(hazard, hazard.flag ? entityTextures.hazard : entityTextures.hazardOff);
+    }
+
     // compute nearest platform top under the player horizontally (renderer-level)
     let nearestTop: number | null = null;
     for (const p of platforms) {
@@ -657,6 +698,11 @@ export class Renderer {
       if (this.collisionDebug && this.debugRedTexture) {
         this.drawSprite({ x: playerPosition.x, y: playerPosition.y }, { x: playerSize.x, y: playerSize.y }, this.debugRedTexture, { x: 1, y: 1 }, { x: 1, y: 1 }, { x: 0, y: 0 }, false);
       }
+    }
+
+    // The payload goes over the player: when carried it sits on top of the collision box.
+    if (entityTextures) {
+      for (const payload of entities.payloads) drawEntity(payload, entityTextures.payload);
     }
 
     // Draw particles
