@@ -71,7 +71,7 @@
 ├── package.json                # npm scripts & deps
 ├── vite.config.ts              # Vite config (base: './', React plugin)
 ├── tsconfig.json / tsconfig.app.json / tsconfig.node.json  # TypeScript configs
-├── custom.d.ts                 # Global Window.createGameModule augmentation
+├── custom.d.ts                 # vite/client type reference
 └── deploy.py                   # SFTP deployment script
 ```
 
@@ -121,22 +121,21 @@ npm run preview       # vite preview
 ### C++ ↔ JS Bridge (embind)
 
 `cpp/src/main.cpp` uses `EMSCRIPTEN_BINDINGS` to expose:
-- Value objects: `Vec2`, `Platform`, `InputState`, `AnimationState`, `Particle`
-- Vectors: `PlatformList`, `ParticleList`
-- Class: `Game` with methods `update`, `handleInput`, `getPlayerPosition`, `getCameraPosition`, `getPlatforms`, `getParticles`, `getPlayerAnimationState`, `getPlayerSize`, `setSoundCallback`, `loadLevel`, `setLevelCompleteCallback`
+- Value objects: `Vec2`, `InputState`
+- Class: `Game` with methods `update`, `handleInput`, `captureFrame`, `framePtr`, `getPlayerPosition`, `getCameraPosition`, `getPlayerSize`, `getLevelName`, `getLevelDescription`, `setSoundCallback`, `loadLevel`, `setLevelCompleteCallback`, plus the character/ability methods
 
-The Emscripten build produces an ES module (`src/wasm/main.js`) with `EXPORT_ES6=1` and `MODULARIZE=1`. The exported factory is named `createWasmModule` in the build script, but `custom.d.ts` and `src/wasm/loader.ts` also refer to `createGameModule` (legacy name from earlier builds). The loader checks both names and falls back to loading `game.js` dynamically if neither exists.
+Per-frame render state crosses as one float buffer, not embind objects: `captureFrame()` packs it (layout `FrameLayout` in `Types.hpp`, mirrored by `FRAME` in `src/game/snapshot.ts`) and returns its length; JS views it at `framePtr()` through `module.HEAPF32`, re-wrapping every frame. Animation state is a `PlayerState` int; the renderer maps it to a spritesheet row.
+
+The Emscripten build produces an ES module (`src/wasm/main.js`) with `EXPORT_ES6=1`, `MODULARIZE=1` and `EXPORT_NAME=createWasmModule`; `src/wasm/loader.ts` dynamic-imports it.
 
 ### Game Loop
 
-`GameCanvas.tsx` owns the loop:
-1. `requestAnimationFrame` drives `gameLoop(timestamp)`.
+`src/game/loop.ts` (`startGameLoop`) owns the loop; `GameCanvas.tsx` only starts it:
+1. `requestAnimationFrame` drives `tick(timestamp)`.
 2. Each frame:
-   - Reads `keysRef` (ArrowLeft, ArrowRight, Space).
-   - Calls `gameInstance.handleInput(inputState)`.
-   - Calls `gameInstance.update(deltaTime)`.
-   - Pulls platform & particle data out of WASM vectors into JS arrays.
-   - Calls `renderer.drawScene(...)`.
+   - Adds real elapsed time to an accumulator and runs `handleInput(KeyboardInput.snapshot())` + `update(1/60)` once per whole tick (max 4; backlog beyond that is dropped).
+   - Calls `captureFrame()` and decodes the snapshot with `readFrame` into a reused `FrameState`.
+   - Calls `renderer.drawScene(...)`, then writes HUD text to DOM refs (never React state).
 
 ### Rendering
 
@@ -190,7 +189,7 @@ Sound events are triggered from C++ via `setSoundCallback` → JS callback. Supp
 
 ## Known Issues & Quirks
 
-1. **Legacy global WASM loader.** `custom.d.ts` and `loader.ts` still reference `window.createGameModule` and a dynamic `game.js` script injection. The current Vite build imports the module directly, so the fallback path is rarely used.
+1. **Ground pound can tunnel through thin floors.** At −12 u/s the vertical resolve in `Game::update` sometimes leaves the player embedded deep enough that the horizontal resolve ejects them sideways off the platform edge (reproducible on `test-1` by jumping and pressing `E` at certain timings). Pre-existing; the fixed 1/60 step makes it rarer than the old 33 ms clamp did, but does not fix it.
 2. **Tests now exist.** `npm run test` runs Vitest unit tests and `npm run test:e2e` runs the Playwright smoke check. The smoke test stubs the WASM module so it can run without an Emscripten build.
 3. **`public/wazzy.png` is not dead.** It is referenced by `public/levels/demo-decor.json` via the `decor` array — see below. (The unused `basic.*` shaders and the `public/shaders/` copies were deleted; Vite loads GLSL via `?raw` from `src/gl/shaders/`.)
 
@@ -200,7 +199,7 @@ Sound events are triggered from C++ via `setSoundCallback` → JS callback. Supp
 
 - **CI added (2026-11-19).** `.github/workflows/ci.yml` runs release WASM build, lint, `tsc -b`, unit and e2e tests on push/PR to `main` (emsdk pinned to 3.1.61). Not yet confirmed green on GitHub — check the first PR run.
 - **Doc drift generally.** This file and `CLAUDE.md` hadn't been touched in ~78 days relative to the last code commit as of this audit, and the "Known Issues" list above had gone stale (three of its five items were already-fixed non-issues). Worth a periodic recheck of this file against the actual code rather than assuming it's current.
-- **`decor` / `backgroundLayers` level fields are undocumented here.** `public/levels/demo-decor.json` (wired into `public/levels/manifest.json` as a selectable level) uses `"decor"` and `"backgroundLayers"` arrays that are fully parsed and rendered client-side (`extractDecorConfigs` / `extractBackgroundLayerConfigs` in `src/components/GameCanvas.tsx`, drawn via `drawBackgroundLayer` in `src/gl/renderer.ts`) — but neither field is mentioned in the "Level Format" section above or in `CLAUDE.md`'s level-format block, and neither is parsed by `Game::loadLevel` in `cpp/src/Game.cpp` (they're TS/renderer-only, never reach C++). `docs/plans/PLAN.md` §1 still lists "expand level schema documentation (camera, backgroundLayers, decor, manifest)" as a not-yet-started roadmap item, which matches. `public/wazzy.png` is referenced from `demo-decor.json`'s `decor` array, so it is no longer a genuinely dead asset (it's just not rendered by anything other than this one demo level).
+- **`decor` / `backgroundLayers` level fields are undocumented here.** `public/levels/demo-decor.json` (wired into `public/levels/manifest.json` as a selectable level) uses `"decor"` and `"backgroundLayers"` arrays that are fully parsed and rendered client-side (`extractDecorConfigs` / `extractBackgroundLayerConfigs` in `src/lib/levelData.ts`, drawn via `drawBackgroundLayer` in `src/gl/renderer.ts`) — but neither field is mentioned in the "Level Format" section above or in `CLAUDE.md`'s level-format block, and neither is parsed by `Game::loadLevel` in `cpp/src/Game.cpp` (they're TS/renderer-only, never reach C++). `docs/plans/PLAN.md` §1 still lists "expand level schema documentation (camera, backgroundLayers, decor, manifest)" as a not-yet-started roadmap item, which matches. `public/wazzy.png` is referenced from `demo-decor.json`'s `decor` array, so it is no longer a genuinely dead asset (it's just not rendered by anything other than this one demo level).
 
 ## Deployment
 

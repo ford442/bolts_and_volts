@@ -3,7 +3,8 @@
 Complete schema for level JSON files in `public/levels/` and the manifest that lists them.
 Verified against the loaders as of this writing:
 
-- `src/components/GameCanvas.tsx` — `normalizeLevelData`, `extractBackgroundLayerConfigs`, `extractDecorConfigs`, `loadDecorLayers`
+- `src/lib/levelData.ts` — `normalizeLevelData`, `extractBackgroundLayerConfigs`, `extractDecorConfigs`
+- `src/game/levelAssets.ts` — `loadBackgroundLayers`, `loadDecorLayers`
 - `src/lib/levelManifest.ts` — `normalizeLevelManifest`
 - `cpp/src/Game.cpp` — `Game::loadLevel`
 

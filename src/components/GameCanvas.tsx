@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { Renderer, type BackgroundLayer, type DecorLayers, type DecorItem, type DecorLayerName, type TextureObject } from '../gl/renderer';
-import { loadWasmModule, type Game, type InputState, type Platform, type Particle } from '../wasm/loader';
+import { Renderer, type BackgroundLayer, type DecorLayers } from '../gl/renderer';
+import { loadWasmModule, type Game } from '../wasm/loader';
 import { AudioManager } from '../audio/AudioManager';
 import { DEFAULT_LEVELS, normalizeLevelManifest, resolveLevelEntry, type LevelManifestEntry } from '../lib/levelManifest';
 import {
@@ -17,6 +17,11 @@ import {
 import { formatCullStats } from '../lib/culling';
 import { observeCanvasSize, type CanvasSize } from '../lib/canvasSize';
 import { reportLevelIssues, summarizeLevelIssues, validateLevel, type LevelIssueSummary } from '../lib/levelValidator';
+import { DEFAULT_BACKGROUND_LAYER, isRecord, normalizeLevelData } from '../lib/levelData';
+import { EMPTY_DECOR_LAYERS, createLevelAssetLoader } from '../game/levelAssets';
+import { KeyboardInput } from '../game/input';
+import { startGameLoop, type SceneAssets } from '../game/loop';
+import { AbilityState, type FrameState } from '../game/snapshot';
 
 import vertexShaderSource from '../gl/shaders/tex.vert.glsl?raw';
 import fragmentShaderSource from '../gl/shaders/tex.frag.glsl?raw';
@@ -25,51 +30,10 @@ import backgroundVertexSource from '../gl/shaders/background.vert.glsl?raw';
 
 const WAZZY_SPRITESHEET_URL = './wazzy_spritesheet.png';
 const PLATFORM_TEXTURE_URL = './platform.png';
-const BACKGROUND_URL = './background.png';
 const MUSIC_URL = './background-music.mp3';
 const JUMP_SFX_URL = './jump.mp3';
 const LAND_SFX_URL = './land.mp3';
-
-type JsonRecord = Record<string, unknown>;
-type Vec2 = { x: number; y: number };
-
-type ParallaxBackgroundConfig = {
-  mode: 'parallax';
-  image: string;
-  scrollFactorX: number;
-  scrollFactorY: number;
-  scale: number;
-  offsetY: number;
-};
-
-type WorldBackgroundConfig = {
-  mode: 'world';
-  image: string;
-  position: Vec2;
-  size: Vec2;
-  parallaxX: number;
-  parallaxY: number;
-};
-
-type BackgroundLayerConfig = ParallaxBackgroundConfig | WorldBackgroundConfig;
-
-type DecorConfig = {
-  image: string;
-  position: Vec2;
-  size: Vec2 | null;
-  layer: DecorLayerName;
-  parallaxX: number;
-  parallaxY: number;
-  offsetY: number;
-  uv: [number, number, number, number] | null;
-};
-
-type LevelData = {
-  coreLevel: JsonRecord;
-  backgroundLayers: BackgroundLayerConfig[];
-  decor: DecorConfig[];
-  platformVisualFlags: boolean[];
-};
+const INITIAL_VOLUME = 0.5;
 
 type LevelMetadata = {
   id: string;
@@ -78,224 +42,31 @@ type LevelMetadata = {
   author: string;
 };
 
-const DEFAULT_BACKGROUND_LAYER: ParallaxBackgroundConfig = {
-  mode: 'parallax',
-  image: BACKGROUND_URL,
-  scrollFactorX: 0.4,
-  scrollFactorY: 0.0,
-  scale: 1.0,
-  offsetY: 0.0,
+/** Write `text` into `el` only when it changed: the game loop calls this every frame. */
+const setText = (el: HTMLElement | null, text: string) => {
+  if (el && el.textContent !== text) el.textContent = text;
 };
 
-const EMPTY_DECOR_LAYERS: DecorLayers = { distant: [], mid: [], foreground: [] };
-
-const isRecord = (value: unknown): value is JsonRecord => typeof value === 'object' && value !== null;
-const isFiniteNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
-const isBoolean = (value: unknown): value is boolean => typeof value === 'boolean';
-const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
-
-const parseVec2 = (value: unknown): Vec2 | null => {
-  if (!isRecord(value)) return null;
-  const { x, y } = value;
-  if (!isFiniteNumber(x) || !isFiniteNumber(y)) return null;
-  return { x, y };
-};
-
-const parsePlatformArray = (value: unknown): Platform[] => {
-  if (!Array.isArray(value)) return [];
-  const parsed: Platform[] = [];
-  for (const item of value) {
-    if (!isRecord(item)) continue;
-    const position = parseVec2(item.position);
-    const size = parseVec2(item.size);
-    if (!position || !size) continue;
-    parsed.push({ position, size });
-  }
-  return parsed;
-};
-
-/** Level `bounds` as a rectangle, or null when absent/invalid. */
-const parseBoundsRect = (level: JsonRecord): { min: Vec2; max: Vec2 } | null => {
-  if (!isRecord(level.bounds)) return null;
-  const min = parseVec2(level.bounds.min);
-  const max = parseVec2(level.bounds.max);
-  if (!min || !max || max.x <= min.x || max.y <= min.y) return null;
-  return { min, max };
+const statusLine = (frame: FrameState): string => {
+  const volts = frame.character === 1;
+  const abilityLabel = volts ? 'Hover' : 'Ground Pound';
+  const abilityStatus = frame.abilityState === AbilityState.Ready
+    ? 'READY'
+    : frame.abilityState === AbilityState.Active ? 'ACTIVE' : `CD ${Math.ceil(frame.abilityCooldown * 100)}%`;
+  const { x, y } = frame.player.position;
+  return `[${volts ? 'VOLTS' : 'BOLTS'}] pos: ${x.toFixed(1)},${y.toFixed(1)} | ${abilityLabel}: ${abilityStatus}`;
 };
 
 /**
- * World-mode layer. `position`/`size` are optional: a missing `size` fits the level bounds width
- * (height follows the image aspect once the texture is known, see `loadBackgroundLayers`), and a
- * missing `position` centres on the bounds. Returns null (layer skipped) when it cannot be placed.
+ * React shell around the game: mounts the canvas, level select, volume, overlays. Per-frame work lives in
+ * `startGameLoop` (src/game/loop.ts); per-frame HUD text is written straight to DOM refs, so this component
+ * only re-renders on level change, volume, hotkey toggles and level complete.
  */
-const parseWorldBackground = (layer: JsonRecord, image: string, level: JsonRecord): WorldBackgroundConfig | null => {
-  const bounds = parseBoundsRect(level);
-  const explicitSize = parseVec2(layer.size);
-  const explicitPosition = parseVec2(layer.position);
-  const size = explicitSize && explicitSize.x > 0 && explicitSize.y > 0
-    ? explicitSize
-    : (bounds ? { x: bounds.max.x - bounds.min.x, y: 0 } : null); // y = 0 -> derive from image aspect
-  const position = explicitPosition ?? (bounds
-    ? { x: (bounds.min.x + bounds.max.x) / 2, y: (bounds.min.y + bounds.max.y) / 2 }
-    : null);
-  if (!size || !position) return null;
-  const parallaxX = isFiniteNumber(layer.parallaxX) ? layer.parallaxX : 1.0;
-  const parallaxY = isFiniteNumber(layer.parallaxY) ? layer.parallaxY : 1.0;
-  return { mode: 'world', image, position, size, parallaxX, parallaxY };
-};
-
-const extractBackgroundLayerConfigs = (level: unknown): BackgroundLayerConfig[] => {
-  if (!isRecord(level) || !Array.isArray(level.backgroundLayers)) {
-    return [DEFAULT_BACKGROUND_LAYER];
-  }
-
-  const parsed: BackgroundLayerConfig[] = [];
-  for (const layer of level.backgroundLayers) {
-    if (!isRecord(layer)) continue;
-    const image = typeof layer.image === 'string' ? layer.image.trim() : '';
-    if (!image) continue;
-
-    if (layer.mode === 'world') {
-      const world = parseWorldBackground(layer, image, level);
-      if (world) parsed.push(world);
-      continue;
-    }
-
-    parsed.push({
-      mode: 'parallax',
-      image,
-      scrollFactorX: isFiniteNumber(layer.scrollFactorX) ? layer.scrollFactorX : DEFAULT_BACKGROUND_LAYER.scrollFactorX,
-      scrollFactorY: isFiniteNumber(layer.scrollFactorY) ? layer.scrollFactorY : DEFAULT_BACKGROUND_LAYER.scrollFactorY,
-      scale: Math.max(0.01, isFiniteNumber(layer.scale) ? layer.scale : DEFAULT_BACKGROUND_LAYER.scale),
-      offsetY: isFiniteNumber(layer.offsetY) ? layer.offsetY : DEFAULT_BACKGROUND_LAYER.offsetY,
-    });
-  }
-
-  return parsed.length > 0 ? parsed : [DEFAULT_BACKGROUND_LAYER];
-};
-
-const parseDecorLayer = (value: unknown): DecorLayerName => {
-  if (value === 'distant' || value === 'far') return 'distant';
-  if (value === 'foreground' || value === 'front') return 'foreground';
-  return 'mid';
-};
-
-const parseDecorUV = (value: unknown): [number, number, number, number] | null => {
-  if (!Array.isArray(value) || value.length !== 4) return null;
-  const [u, v, w, h] = value;
-  if (!isFiniteNumber(u) || !isFiniteNumber(v) || !isFiniteNumber(w) || !isFiniteNumber(h)) return null;
-  if (w <= 0 || h <= 0) return null;
-  return [u, v, w, h];
-};
-
-const extractDecorConfigs = (level: unknown): DecorConfig[] => {
-  if (!isRecord(level) || !Array.isArray(level.decor)) return [];
-  const parsed: DecorConfig[] = [];
-  for (const item of level.decor) {
-    if (!isRecord(item)) continue;
-    const position = parseVec2(item.position);
-    if (!position) continue;
-    const imageValue = typeof item.image === 'string' ? item.image : (typeof item.texture === 'string' ? item.texture : '');
-    const image = imageValue.trim();
-    if (!image) continue;
-    const size = parseVec2(item.size);
-    const parallaxScalar = isFiniteNumber(item.parallaxFactor)
-      ? item.parallaxFactor
-      : (isFiniteNumber(item.parallax) ? item.parallax : 1.0);
-    const parallaxX = isFiniteNumber(item.parallaxX)
-      ? item.parallaxX
-      : (isFiniteNumber(item.scrollFactorX) ? item.scrollFactorX : parallaxScalar);
-    const parallaxY = isFiniteNumber(item.parallaxY)
-      ? item.parallaxY
-      : (isFiniteNumber(item.scrollFactorY) ? item.scrollFactorY : parallaxScalar);
-    parsed.push({
-      image,
-      position,
-      size,
-      layer: parseDecorLayer(item.layer),
-      parallaxX,
-      parallaxY,
-      offsetY: isFiniteNumber(item.offsetY) ? item.offsetY : 0.0,
-      uv: parseDecorUV(item.uv),
-    });
-  }
-  return parsed;
-};
-
-const normalizeLevelData = (level: unknown): LevelData => {
-  const fallbackPlatforms = [
-    { position: { x: -12.25, y: -2.0 }, size: { x: 110.0, y: 0.2 } },
-    { position: { x: 0.0, y: -0.8 }, size: { x: 2.0, y: 0.2 } },
-    { position: { x: 2.0, y: -0.6 }, size: { x: 1.0, y: 0.2 } },
-    { position: { x: 4.0, y: -0.4 }, size: { x: 1.0, y: 0.2 } },
-    { position: { x: 6.0, y: -0.2 }, size: { x: 1.5, y: 0.2 } },
-    { position: { x: 8.0, y: 0.2 }, size: { x: 1.0, y: 0.2 } },
-    { position: { x: 10.0, y: 0.6 }, size: { x: 1.0, y: 0.2 } },
-  ];
-
-  if (!isRecord(level)) {
-    return {
-      coreLevel: { platforms: fallbackPlatforms },
-      backgroundLayers: [DEFAULT_BACKGROUND_LAYER],
-      decor: [],
-      platformVisualFlags: fallbackPlatforms.map(() => true),
-    };
-  }
-
-  const coreLevel: JsonRecord = {};
-  if (typeof level.name === 'string') coreLevel.name = level.name;
-  if (typeof level.description === 'string') coreLevel.description = level.description;
-  const spawn = parseVec2(level.spawn);
-  if (spawn) coreLevel.spawn = spawn;
-  const bounds = isRecord(level.bounds) ? level.bounds : null;
-  if (bounds) {
-    const min = parseVec2(bounds.min);
-    const max = parseVec2(bounds.max);
-    if (min && max) coreLevel.bounds = { min, max };
-  }
-  const camera = isRecord(level.camera) ? level.camera : null;
-  if (camera) {
-    const cameraOut: JsonRecord = {};
-    if (isBoolean(camera.followY)) cameraOut.followY = camera.followY;
-    if (isFiniteNumber(camera.verticalDeadzone)) cameraOut.verticalDeadzone = camera.verticalDeadzone;
-    if (isFiniteNumber(camera.lookAheadY)) cameraOut.lookAheadY = camera.lookAheadY;
-    if (Object.keys(cameraOut).length > 0) coreLevel.camera = cameraOut;
-  }
-
-  const sourcePlatforms = Array.isArray(level.platforms) ? level.platforms : [];
-  const parsedPlatforms: Platform[] = [];
-  const platformVisualFlags: boolean[] = [];
-  for (const item of sourcePlatforms) {
-    if (!isRecord(item)) continue;
-    const position = parseVec2(item.position);
-    const size = parseVec2(item.size);
-    if (!position || !size) continue;
-    parsedPlatforms.push({ position, size });
-    platformVisualFlags.push(isBoolean(item.visual) ? item.visual : true);
-  }
-  const platforms = parsedPlatforms.length > 0 ? parsedPlatforms : fallbackPlatforms;
-  coreLevel.platforms = platforms;
-
-  const goals = parsePlatformArray(level.goals);
-  if (goals.length > 0) coreLevel.goals = goals;
-
-  return {
-    coreLevel,
-    backgroundLayers: extractBackgroundLayerConfigs(level),
-    decor: extractDecorConfigs(level),
-    platformVisualFlags: parsedPlatforms.length > 0 ? platformVisualFlags : fallbackPlatforms.map(() => true),
-  };
-};
-
-
 const GameCanvas = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const keysRef = useRef<Record<string, boolean>>({
-    'ArrowLeft': false, 'ArrowRight': false, 'Space': false,
-    'KeyR': false,  // level reload (one-shot)
-    'KeyC': false,  // character switch (Bolts <-> Volts)
-    'KeyE': false,  // ability key
-  });
+  const statusRef = useRef<HTMLDivElement>(null);
+  const authoringInfoRef = useRef<HTMLDivElement>(null);
+  const cullInfoRef = useRef<HTMLDivElement>(null);
   const audioManagerRef = useRef<AudioManager | null>(null);
   const gameInstanceRef = useRef<Game | null>(null);
   const reloadLevelRef = useRef<((targetLevelId?: string, cacheBust?: boolean) => Promise<void>) | null>(null);
@@ -308,16 +79,12 @@ const GameCanvas = () => {
   const snappedCursorRef = useRef<{ x: number; y: number } | null>(null);
   const copyNoteTimerRef = useRef<number | undefined>(undefined);
   const [authoring, setAuthoring] = useState<AuthoringState>(INITIAL_AUTHORING_STATE);
-  const [authoringInfo, setAuthoringInfo] = useState('');
   // K: cull debug (outlines the shrunken visible rect and shows drawn/total counters). Render-only.
   const cullDebugRef = useRef(false);
   const [cullDebug, setCullDebug] = useState(false);
-  const [cullInfo, setCullInfo] = useState('');
   const [copyNote, setCopyNote] = useState('');
-  const [volume, setVolume] = useState(0.5);
+  const [volume, setVolume] = useState(INITIAL_VOLUME);
   const [levelComplete, setLevelComplete] = useState(false);
-  const [debugInfo, setDebugInfo] = useState('');
-  const [currentCharacter, setCurrentCharacter] = useState<'BOLTS' | 'VOLTS'>('BOLTS');
   const [availableLevels, setAvailableLevels] = useState<LevelManifestEntry[]>(DEFAULT_LEVELS);
   const [currentLevelId, setCurrentLevelId] = useState<string>(DEFAULT_LEVELS[0].id);
   const [levelIssues, setLevelIssues] = useState<LevelIssueSummary | null>(null);
@@ -328,31 +95,24 @@ const GameCanvas = () => {
     author: '',
   });
 
+  // Audio + one-shot hotkeys. Held movement keys are read by KeyboardInput in the game loop.
   useEffect(() => {
     audioManagerRef.current = new AudioManager();
     const audioManager = audioManagerRef.current;
-    audioManager.setVolume(volume);
+    audioManager.setVolume(INITIAL_VOLUME);
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.code in keysRef.current) keysRef.current[e.code] = true;
       audioManager.resumeContext();
       audioManager.playMusic();
 
       // R key: reload current level JSON (great for iterating on map design)
       if (e.code === 'KeyR') {
         void reloadLevelRef.current?.(currentLevelIdRef.current, true);
-        keysRef.current['KeyR'] = false;
       }
 
-      // C key: switch between Bolts and Volts
+      // C key: switch between Bolts and Volts (the HUD picks the new character up from the next snapshot)
       if (e.code === 'KeyC') {
-        const gi = gameInstanceRef.current;
-        if (gi) {
-          gi.switchCharacter();
-          const newChar = gi.getCurrentCharacter() === 1 ? 'VOLTS' : 'BOLTS';
-          setCurrentCharacter(newChar);
-        }
-        keysRef.current['KeyC'] = false;
+        gameInstanceRef.current?.switchCharacter();
       }
 
       // Authoring hotkeys: only plain presses (no Ctrl/Meta/Alt, no key-repeat) and never while a form
@@ -404,37 +164,29 @@ const GameCanvas = () => {
         }
       }
     };
-    const handleKeyUp = (e: KeyboardEvent) => {
-      if (e.code in keysRef.current) keysRef.current[e.code] = false;
-    };
     window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
       audioManager.stopMusic();
       window.clearTimeout(copyNoteTimerRef.current);
     };
-  }, [volume]);
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    let animationFrameId = 0;
+    let stopLoop: (() => void) | null = null;
     let gameInstance: Game | null = null;
     // Set by cleanup. React StrictMode runs this effect twice in dev, and the first run's async init would
     // otherwise carry on as a second game + renderer on the same canvas (never resized, drawn over the live one).
     let disposed = false;
     const audioManager = audioManagerRef.current!;
+    const input = new KeyboardInput();
 
     // The observer only records the latest size; the game loop applies it right before drawing. Resizing a
     // canvas clears it, so doing that from the observer callback (after rAF) would present a blank frame.
     let pendingSize: CanvasSize | null = null;
     const stopObservingSize = observeCanvasSize(canvas, (size) => { pendingSize = size; });
-
-    const handleSoundEvent = (soundName: string) => {
-      audioManager.playSfx(soundName);
-    };
 
     const initializeAndRun = async () => {
       try {
@@ -446,13 +198,10 @@ const GameCanvas = () => {
 
         const wasmModule = await loadWasmModule();
         if (disposed) return;
-        gameInstance = new wasmModule.Game();
-        gameInstance.setSoundCallback(handleSoundEvent);
-
-        // Register level complete callback
-        gameInstance.setLevelCompleteCallback(() => {
-          setLevelComplete(true);
-        });
+        const game = new wasmModule.Game();
+        gameInstance = game;
+        game.setSoundCallback((soundName: string) => audioManager.playSfx(soundName));
+        game.setLevelCompleteCallback(() => setLevelComplete(true));
 
         const renderer = new Renderer(canvas, vertexShaderSource, fragmentShaderSource, backgroundVertexSource, backgroundFragmentSource);
         const applyPendingSize = () => {
@@ -465,89 +214,20 @@ const GameCanvas = () => {
           renderer.loadTexture(WAZZY_SPRITESHEET_URL),
           renderer.loadTexture(PLATFORM_TEXTURE_URL),
         ]);
-
-        const backgroundTextureCache = new Map<string, Promise<TextureObject>>();
-        const decorTextureCache = new Map<string, Promise<TextureObject>>();
-        const loadBackgroundTexture = (url: string): Promise<TextureObject> => {
-          const existing = backgroundTextureCache.get(url);
-          if (existing) return existing;
-          const request = renderer.loadTexture(url, { repeat: true, pixelated: false });
-          backgroundTextureCache.set(url, request);
-          return request;
+        const assets: SceneAssets = {
+          playerTexture,
+          platformTexture,
+          backgroundLayers: [],
+          decorLayers: EMPTY_DECOR_LAYERS,
+          platformVisualFlags: [],
         };
-        const loadDecorTexture = (url: string): Promise<TextureObject> => {
-          const existing = decorTextureCache.get(url);
-          if (existing) return existing;
-          const request = renderer.loadTexture(url, { repeat: false, pixelated: false });
-          decorTextureCache.set(url, request);
-          return request;
-        };
-        const loadBackgroundLayers = async (configs: BackgroundLayerConfig[]): Promise<BackgroundLayer[]> => Promise.all(
-          configs.map(async (config): Promise<BackgroundLayer> => {
-            if (config.mode === 'world') {
-              // Clamp-to-edge texture: a placed pano must not wrap around its rectangle.
-              const texture = await loadDecorTexture(config.image);
-              const size = config.size.y > 0
-                ? config.size
-                : { x: config.size.x, y: config.size.x * (texture.height / texture.width) };
-              return { mode: 'world', texture, position: config.position, size, parallaxX: config.parallaxX, parallaxY: config.parallaxY };
-            }
-            return {
-              mode: 'parallax',
-              texture: await loadBackgroundTexture(config.image),
-              scrollFactorX: config.scrollFactorX,
-              scrollFactorY: config.scrollFactorY,
-              scale: config.scale,
-              offsetY: config.offsetY,
-            };
-          })
-        );
-
-        const loadDecorLayers = async (configs: DecorConfig[]): Promise<DecorLayers> => {
-          const loaded = await Promise.all(
-            configs.map(async (config): Promise<DecorItem | null> => {
-              try {
-                const texture = await loadDecorTexture(config.image);
-                const uv = config.uv ?? [0, 0, texture.width, texture.height];
-                const frameCoord = { x: uv[0], y: uv[1] };
-                const frameSize = { x: uv[2], y: uv[3] };
-                const size = config.size ?? {
-                  x: clamp(frameSize.x / frameSize.y, 0.1, 10.0),
-                  y: 1.0,
-                };
-                return {
-                  position: config.position,
-                  size: {
-                    x: clamp(size.x, 0.1, 20.0),
-                    y: clamp(size.y, 0.1, 20.0),
-                  },
-                  texture,
-                  layer: config.layer,
-                  parallaxX: config.parallaxX,
-                  parallaxY: config.parallaxY,
-                  offsetY: config.offsetY,
-                  frameCoord,
-                  frameSize,
-                };
-              } catch (error) {
-                console.warn(`[level ${currentLevelIdRef.current}] Failed to load decor texture "${config.image}"`, error);
-                return null;
-              }
-            })
-          );
-
-          const layers: DecorLayers = { distant: [], mid: [], foreground: [] };
-          for (const item of loaded) {
-            if (!item) continue;
-            layers[item.layer].push(item);
-          }
-          return layers;
+        const { loadBackgroundLayers, loadDecorLayers } = createLevelAssetLoader(renderer, () => `[level ${currentLevelIdRef.current}]`);
+        const setLevelAssets = (backgroundLayers: BackgroundLayer[], decorLayers: DecorLayers, platformVisualFlags: boolean[]) => {
+          assets.backgroundLayers = backgroundLayers;
+          assets.decorLayers = decorLayers;
+          assets.platformVisualFlags = platformVisualFlags;
         };
 
-        let backgroundLayers: BackgroundLayer[] = [];
-        let decorLayers: DecorLayers = EMPTY_DECOR_LAYERS;
-        let platformVisualFlags: boolean[] = [];
-        const getLevelEntry = (targetLevelId?: string): LevelManifestEntry => resolveLevelEntry(levelsRef.current, targetLevelId);
         const loadManifest = async (): Promise<void> => {
           try {
             const response = await fetch('/levels/manifest.json');
@@ -567,14 +247,19 @@ const GameCanvas = () => {
           }
         };
         const loadLevelData = async (targetLevelId?: string, cacheBust: boolean = false) => {
-          if (!gameInstance) return;
-          const targetLevel = getLevelEntry(targetLevelId);
+          const targetLevel = resolveLevelEntry(levelsRef.current, targetLevelId);
           currentLevelIdRef.current = targetLevel.id;
           setCurrentLevelId(targetLevel.id);
           const levelUrl = cacheBust
             ? `/levels/${targetLevel.file}?ts=${Date.now()}`
             : `/levels/${targetLevel.file}`;
           const levelLabel = `${targetLevel.id} (${targetLevel.file})`;
+          const manifestMetadata: LevelMetadata = {
+            id: targetLevel.id,
+            name: targetLevel.name ?? targetLevel.id,
+            description: targetLevel.description ?? '',
+            author: targetLevel.author ?? '',
+          };
           const reportLoadFailure = (message: string, detail?: unknown): void => {
             const full = `[level ${levelLabel}] ${message}`;
             if (detail === undefined) console.error(full); else console.error(full, detail);
@@ -584,160 +269,90 @@ const GameCanvas = () => {
             const levelResp = await fetch(levelUrl);
             if (levelResp.ok) {
               const levelObj: unknown = await levelResp.json();
-              // Validation only reports; the lenient normalizer below still decides what loads.
+              // Validation only reports; the lenient normalizer still decides what loads.
               const issues = validateLevel(levelObj);
               reportLevelIssues(levelLabel, issues);
               setLevelIssues(issues.length > 0 ? summarizeLevelIssues(levelLabel, issues) : null);
               const normalized = normalizeLevelData(levelObj);
-              gameInstance.loadLevel(normalized.coreLevel);
-              backgroundLayers = await loadBackgroundLayers(normalized.backgroundLayers);
-              decorLayers = await loadDecorLayers(normalized.decor);
-              platformVisualFlags = normalized.platformVisualFlags;
-              const levelRecord = isRecord(levelObj) ? levelObj : {};
-              const resolvedName = gameInstance.getLevelName().trim() || targetLevel.name || targetLevel.id;
-              const resolvedDescription = gameInstance.getLevelDescription().trim() || targetLevel.description || '';
-              const resolvedAuthor = typeof levelRecord.author === 'string'
-                ? levelRecord.author
-                : (targetLevel.author ?? '');
+              game.loadLevel(normalized.coreLevel);
+              setLevelAssets(
+                await loadBackgroundLayers(normalized.backgroundLayers),
+                await loadDecorLayers(normalized.decor),
+                normalized.platformVisualFlags,
+              );
               setCurrentLevelMetadata({
                 id: targetLevel.id,
-                name: resolvedName,
-                description: resolvedDescription,
-                author: resolvedAuthor,
+                name: game.getLevelName().trim() || targetLevel.name || targetLevel.id,
+                description: game.getLevelDescription().trim() || targetLevel.description || '',
+                author: isRecord(levelObj) && typeof levelObj.author === 'string' ? levelObj.author : (targetLevel.author ?? ''),
               });
             } else {
               reportLoadFailure(`Failed to fetch ${levelUrl}: HTTP ${levelResp.status}. Loading default background and no level data.`);
-              backgroundLayers = await loadBackgroundLayers([DEFAULT_BACKGROUND_LAYER]);
-              decorLayers = EMPTY_DECOR_LAYERS;
-              platformVisualFlags = [];
-              setCurrentLevelMetadata({
-                id: targetLevel.id,
-                name: targetLevel.name ?? targetLevel.id,
-                description: targetLevel.description ?? '',
-                author: targetLevel.author ?? '',
-              });
+              setLevelAssets(await loadBackgroundLayers([DEFAULT_BACKGROUND_LAYER]), EMPTY_DECOR_LAYERS, []);
+              setCurrentLevelMetadata(manifestMetadata);
             }
           } catch (err) {
             reportLoadFailure('Error loading level (invalid JSON syntax, or a background texture failed to load). Falling back to the default background.', err);
-            backgroundLayers = await loadBackgroundLayers([DEFAULT_BACKGROUND_LAYER]);
-            decorLayers = EMPTY_DECOR_LAYERS;
-            platformVisualFlags = [];
-            setCurrentLevelMetadata({
-              id: targetLevel.id,
-              name: targetLevel.name ?? targetLevel.id,
-              description: targetLevel.description ?? '',
-              author: targetLevel.author ?? '',
-            });
+            setLevelAssets(await loadBackgroundLayers([DEFAULT_BACKGROUND_LAYER]), EMPTY_DECOR_LAYERS, []);
+            setCurrentLevelMetadata(manifestMetadata);
           }
         };
         await loadManifest();
         await loadLevelData(undefined, false);
+        if (disposed) return;
 
-        // Reload function for rapid iteration (R key)
-        const reloadLevel = async (targetLevelId?: string, cacheBust: boolean = false) => {
-          if (!gameInstance) return;
+        // Reload function for rapid iteration (R key, level select, digits, overlay buttons)
+        reloadLevelRef.current = async (targetLevelId?: string, cacheBust: boolean = false) => {
           try {
             await loadLevelData(targetLevelId, cacheBust);
             setLevelComplete(false);
-            keysRef.current['KeyR'] = false;
           } catch (e) {
-            console.warn('Failed to reload level on R key:', e);
+            console.warn('Failed to reload level:', e);
           }
         };
-        reloadLevelRef.current = reloadLevel;
-        gameInstanceRef.current = gameInstance;
-        let lastTime = performance.now();
+        gameInstanceRef.current = game;
 
-        const gameLoop = (timestamp: number) => {
-          if (!gameInstance || disposed) return;
-          applyPendingSize();
-          const deltaTime = (timestamp - lastTime) / 1000.0;
-          lastTime = timestamp;
-          const inputState: InputState = {
-            left: keysRef.current['ArrowLeft'],
-            right: keysRef.current['ArrowRight'],
-            jump: keysRef.current['Space'],
-            abilityKey: keysRef.current['KeyE'],
-          };
-          gameInstance.handleInput(inputState);
-          gameInstance.update(deltaTime);
-
-          const playerPosition = gameInstance.getPlayerPosition();
-          const cameraPosition = gameInstance.getCameraPosition();
-          const wasmPlatforms = gameInstance.getPlatforms();
-          const playerAnim = gameInstance.getPlayerAnimationState();
-          const playerSize = gameInstance.getPlayerSize();
-          const jsPlatforms: Platform[] = [];
-          for (let i = 0; i < wasmPlatforms.size(); i++) {
-            jsPlatforms.push(wasmPlatforms.get(i));
-          }
-          const wasmParticles = gameInstance.getParticles();
-          const jsParticles: Particle[] = [];
-          for (let i = 0; i < wasmParticles.size(); i++) {
-            jsParticles.push(wasmParticles.get(i));
-          }
-          const wasmGoals = gameInstance.getGoals();
-          const jsGoals: Platform[] = [];
-          for (let i = 0; i < wasmGoals.size(); i++) {
-            jsGoals.push(wasmGoals.get(i));
-          }
-
-          // Ability state for HUD
-          const abilityState = gameInstance.getAbilityState();
-          const abilityCooldown = gameInstance.getAbilityCooldownPercent();
-          const abilityLabel = currentCharacter === 'BOLTS' ? 'Ground Pound' : 'Hover';
-          const abilityStatus = abilityState === 0 ? 'READY' : abilityState === 1 ? 'ACTIVE' : `CD ${Math.ceil(abilityCooldown * 100)}%`;
-
-          setDebugInfo(`[${currentCharacter}] pos: ${playerPosition.x.toFixed(1)},${playerPosition.y.toFixed(1)} | ${abilityLabel}: ${abilityStatus}`);
-
-          // Level-authoring overlay: cursor -> world coordinates and the options handed to the renderer.
-          const authoringState = authoringRef.current;
-          let overlay: AuthoringOverlay | null = null;
-          if (authoringState.grid || authoringState.hud) {
-            const gridStep = GRID_STEPS[authoringState.gridStepIndex];
-            const view = viewSize(canvas.width, canvas.height);
-            const mouse = mouseRef.current;
-            const world = mouse ? screenToWorld(mouse.u, mouse.v, cameraPosition, view) : null;
-            const snapped = world ? snapToGrid(world, gridStep) : null;
-            snappedCursorRef.current = snapped;
-            overlay = { grid: authoringState.grid, gridStep, strongOutlines: authoringState.hud, snapMarker: authoringState.hud ? snapped : null };
-            if (authoringState.hud) {
-              const f = (n: number) => n.toFixed(2);
-              setAuthoringInfo([
-                `AUTHORING  grid ${authoringState.grid ? gridStep : 'off'}`,
-                world ? `mouse  ${f(world.x)}, ${f(world.y)}` : 'mouse  (off canvas)',
-                snapped ? `snap   ${f(snapped.x)}, ${f(snapped.y)}` : 'snap   -',
-                `camera ${f(cameraPosition.x)}, ${f(cameraPosition.y)}`,
-                `view   x ${f(cameraPosition.x - view.x / 2)}..${f(cameraPosition.x + view.x / 2)}  y ${f(cameraPosition.y - view.y / 2)}..${f(cameraPosition.y + view.y / 2)}`,
-              ].join('\n'));
-            }
-          } else {
+        // Level-authoring overlay: cursor -> world coordinates and the options handed to the renderer.
+        const authoringOverlay = (frame: FrameState): AuthoringOverlay | null => {
+          const state = authoringRef.current;
+          if (!state.grid && !state.hud) {
             snappedCursorRef.current = null;
+            return null;
           }
-
-          const charForRenderer = currentCharacter === 'VOLTS' ? 1 : 0;
-          renderer.drawScene(
-            cameraPosition,
-            playerPosition,
-            playerSize,
-            jsPlatforms,
-            jsParticles,
-            playerTexture,
-            platformTexture,
-            backgroundLayers,
-            decorLayers,
-            platformVisualFlags,
-            playerAnim,
-            jsGoals,
-            charForRenderer,
-            overlay,
-            cullDebugRef.current
-          );
-          if (cullDebugRef.current) setCullInfo(formatCullStats(renderer.getCullStats()));
-          animationFrameId = requestAnimationFrame(gameLoop);
+          const camera = frame.camera;
+          const gridStep = GRID_STEPS[state.gridStepIndex];
+          const view = viewSize(canvas.width, canvas.height);
+          const mouse = mouseRef.current;
+          const world = mouse ? screenToWorld(mouse.u, mouse.v, camera, view) : null;
+          const snapped = world ? snapToGrid(world, gridStep) : null;
+          snappedCursorRef.current = snapped;
+          if (state.hud) {
+            const f = (n: number) => n.toFixed(2);
+            setText(authoringInfoRef.current, [
+              `AUTHORING  grid ${state.grid ? gridStep : 'off'}`,
+              world ? `mouse  ${f(world.x)}, ${f(world.y)}` : 'mouse  (off canvas)',
+              snapped ? `snap   ${f(snapped.x)}, ${f(snapped.y)}` : 'snap   -',
+              `camera ${f(camera.x)}, ${f(camera.y)}`,
+              `view   x ${f(camera.x - view.x / 2)}..${f(camera.x + view.x / 2)}  y ${f(camera.y - view.y / 2)}..${f(camera.y + view.y / 2)}`,
+            ].join('\n'));
+          }
+          return { grid: state.grid, gridStep, strongOutlines: state.hud, snapMarker: state.hud ? snapped : null };
         };
-        if (disposed) return;
-        animationFrameId = requestAnimationFrame(gameLoop);
+
+        stopLoop = startGameLoop({
+          module: wasmModule,
+          game,
+          renderer,
+          input,
+          assets,
+          beforeFrame: applyPendingSize,
+          overlay: authoringOverlay,
+          cullDebug: () => cullDebugRef.current,
+          afterDraw: (frame) => {
+            setText(statusRef.current, statusLine(frame));
+            if (cullDebugRef.current) setText(cullInfoRef.current, formatCullStats(renderer.getCullStats()));
+          },
+        });
       } catch (error) {
         console.error("Failed to initialize game:", error);
       }
@@ -748,7 +363,8 @@ const GameCanvas = () => {
     return () => {
       disposed = true;
       stopObservingSize();
-      cancelAnimationFrame(animationFrameId);
+      stopLoop?.();
+      input.dispose();
       reloadLevelRef.current = null;
       gameInstanceRef.current = null;
       if (gameInstance) gameInstance.delete();
@@ -758,9 +374,7 @@ const GameCanvas = () => {
   const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newVolume = parseFloat(e.target.value);
     setVolume(newVolume);
-    if (audioManagerRef.current) {
-      audioManagerRef.current.setVolume(newVolume);
-    }
+    audioManagerRef.current?.setVolume(newVolume);
   };
 
   const canvasStyle: React.CSSProperties = {
@@ -830,18 +444,18 @@ const GameCanvas = () => {
         {currentLevelMetadata.author && (
           <div style={{ opacity: 0.75, marginTop: 2 }}>by {currentLevelMetadata.author}</div>
         )}
-        <div style={{ marginTop: 4 }}>{debugInfo}</div>
+        {/* Written by the game loop (setText), not React. */}
+        <div ref={statusRef} data-testid="status-hud" style={{ marginTop: 4 }} />
       </div>
       {cullDebug && (
         <div
+          ref={cullInfoRef}
           data-testid="cull-hud"
           style={{
             position: 'absolute', right: '10px', bottom: '44px', zIndex: 30, color: '#f80', background: 'rgba(0,0,0,0.75)',
             padding: '6px 8px', fontFamily: 'monospace', fontSize: '12px', borderRadius: '4px', whiteSpace: 'pre', pointerEvents: 'none',
           }}
-        >
-          {cullInfo}
-        </div>
+        />
       )}
       {authoring.hud && (
         <div
@@ -851,7 +465,7 @@ const GameCanvas = () => {
             padding: '6px 8px', fontFamily: 'monospace', fontSize: '12px', borderRadius: '4px', whiteSpace: 'pre', pointerEvents: 'none',
           }}
         >
-          {authoringInfo}
+          <div ref={authoringInfoRef} />
           {copyNote && <div style={{ color: '#f0f', marginTop: 4 }}>{copyNote}</div>}
         </div>
       )}

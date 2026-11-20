@@ -10,11 +10,13 @@ struct Platform { Vec2 position; Vec2 size; };
 
 struct InputState { bool left; bool right; bool jump; bool abilityKey; };
 
+// Crosses the JS boundary as an int (FrameLayout header slot ANIM_STATE); keep values in sync with
+// `AnimState` in src/game/snapshot.ts.
 enum class PlayerState {
-    Idle,
-    Run,
-    Jump,
-    Fall
+    Idle = 0,
+    Run = 1,
+    Jump = 2,
+    Fall = 3
 };
 
 // Character identity for Bolts & Volts (additive, non-breaking groundwork)
@@ -31,10 +33,33 @@ enum class AbilityState {
 };
 
 struct AnimationState {
-    std::string currentState;
+    PlayerState currentState;
     int currentFrame;
     bool facingLeft;
 };
+
+// Float layout of the per-frame snapshot written by Game::captureFrame(). Mirrored in
+// src/game/snapshot.ts (FRAME_HEADER etc.) — change both together.
+namespace FrameLayout {
+    constexpr int PLAYER_X = 0;
+    constexpr int PLAYER_Y = 1;
+    constexpr int PLAYER_W = 2;
+    constexpr int PLAYER_H = 3;
+    constexpr int CAMERA_X = 4;
+    constexpr int CAMERA_Y = 5;
+    constexpr int ANIM_STATE = 6;      // PlayerState as int
+    constexpr int ANIM_FRAME = 7;
+    constexpr int FACING_LEFT = 8;     // 0 or 1
+    constexpr int CHARACTER = 9;       // CharacterType as int
+    constexpr int ABILITY_STATE = 10;  // AbilityState as int
+    constexpr int ABILITY_COOLDOWN = 11; // 0..1
+    constexpr int PLATFORM_COUNT = 12;
+    constexpr int GOAL_COUNT = 13;
+    constexpr int PARTICLE_COUNT = 14;
+    constexpr int HEADER_SIZE = 16;    // slot 15 reserved
+    constexpr int BOX_STRIDE = 4;      // platforms and goals: x, y, w, h
+    constexpr int PARTICLE_STRIDE = 4; // x, y, size, life / maxLife
+}
 
 // Physics tuning constants (extracted for clarity and easy iteration)
 namespace Physics {

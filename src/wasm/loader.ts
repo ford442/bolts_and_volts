@@ -1,43 +1,25 @@
+import type { CoreLevel } from '../lib/levelData';
+
 export interface Vec2 { x: number; y: number; }
 
 export interface Platform { position: Vec2; size: Vec2; }
 
-export interface PlatformList { get(index: number): Platform; size(): number; }
-
 export interface InputState { left: boolean; right: boolean; jump: boolean; abilityKey: boolean; }
-
-export interface AnimationState {
-  currentState: string;
-  currentFrame: number;
-  facingLeft: boolean;
-}
-
-export interface Particle {
-  position: Vec2;
-  velocity: Vec2;
-  life: number;
-  maxLife: number;
-  size: number;
-  rotation: number;
-  angularVelocity: number;
-}
-
-export interface ParticleList { get(index: number): Particle; size(): number; }
 
 export interface Game {
   update(deltaTime: number): void;
   handleInput(inputState: InputState): void;
+  /** Pack this frame's render state into the snapshot buffer; returns its length in floats. */
+  captureFrame(): number;
+  /** Byte address of the snapshot buffer in the wasm heap. Valid until the next `captureFrame`. */
+  framePtr(): number;
   getPlayerPosition(): Vec2;
   getPlayerSize(): Vec2;
   getCameraPosition(): Vec2;
-  getPlatforms(): PlatformList;
-  getGoals(): PlatformList;
-  getParticles(): ParticleList;
-  getPlayerAnimationState(): AnimationState;
   getLevelName(): string;
   getLevelDescription(): string;
   setSoundCallback(callback: (soundName: string) => void): void;
-  loadLevel(level: any): void;
+  loadLevel(level: CoreLevel): void;
   setLevelCompleteCallback(callback: () => void): void;
   // Two-character (Bolts / Volts) system
   switchCharacter(): void;
@@ -50,43 +32,15 @@ export interface Game {
 
 export interface GameModule {
   Game: { new(): Game };
+  /** Replaced by Emscripten when memory grows: read it fresh every frame, never cache it. */
+  HEAPF32: Float32Array;
 }
 
+/**
+ * Load the Emscripten ES module (`-sMODULARIZE -sEXPORT_ES6 -sEXPORT_NAME=createWasmModule`). The dynamic
+ * import keeps the glue + .wasm fetch on demand and lets Vite handle the .wasm sibling asset.
+ */
 export const loadWasmModule = async (): Promise<GameModule> => {
-  // Modern Emscripten path (build:wasm uses -s EXPORT_NAME="createWasmModule" + MODULARIZE + EXPORT_ES6).
-  // The generated src/wasm/main.js exports the factory as its default.
-  // We use dynamic import so the large glue + WASM fetch happens on demand and Vite can handle the .wasm sibling asset.
-  try {
-    const mod = await import('../wasm/main.js');
-    const factory = mod.default || (window as any).createWasmModule || (window as any).createGameModule;
-    if (typeof factory === 'function') {
-      return await factory() as GameModule;
-    }
-  } catch (e) {
-    console.warn('[WASM] Direct import of ../wasm/main.js failed, trying legacy window fallbacks:', e);
-  }
-
-  // Legacy fallbacks (pre-2025 builds or manual script tags)
-  if ((window as any).createWasmModule) {
-    return await (window as any).createWasmModule() as GameModule;
-  }
-  if ((window as any).createGameModule) {
-    return await (window as any).createGameModule() as GameModule;
-  }
-
-  // Last resort: try injecting a script named game.js (old behavior)
-  return new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    script.src = 'game.js';
-    script.onload = async () => {
-      const factory = (window as any).createWasmModule || (window as any).createGameModule;
-      if (factory) {
-        resolve(await factory() as GameModule);
-      } else {
-        reject(new Error("game.js loaded but no WASM factory found on window"));
-      }
-    };
-    script.onerror = () => reject(new Error("Failed to load game.js (legacy fallback)"));
-    document.body.appendChild(script);
-  });
+  const mod = (await import('../wasm/main.js')) as { default: () => Promise<GameModule> };
+  return mod.default();
 };

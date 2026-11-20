@@ -33,20 +33,20 @@ Bolts & Volts is a 2D platformer combining C++ game logic with a React/WebGL2 fr
 1. **Game Logic (C++/WASM)**
    - Location: `cpp/src/` (Game.cpp, ParticleSystem.hpp, etc.)
    - Compiled via Emscripten to `src/wasm/main.js`
-   - Exported functions: `update()`, `handleInput()`, `getPlayerPosition()`, `getPlatforms()`, `getParticles()`, `getPlayerAnimationState()`
+   - Exported functions: `update()`, `handleInput()`, `captureFrame()` + `framePtr()` (one float snapshot per frame, read via `HEAPF32`), `getPlayerPosition()`
    - Uses callbacks (`setSoundCallback`, `setLevelCompleteCallback`) for JavaScript interop
 
 2. **TypeScript/React Frontend** (`src/`)
    - **Components:**
      - `App.tsx` — Main layout with header, game canvas, footer
-     - `GameCanvas.tsx` — Canvas container; manages WASM instance, event listeners, game loop, and renderer
+     - `GameCanvas.tsx` — React shell; loads WASM/level/assets and starts the loop (`src/game/loop.ts`). No per-frame React state.
    - **WebGL Rendering** (`gl/renderer.ts`)
      - Sprite rendering with texture atlases and animation frame tracking
      - Background parallax rendering
      - Handles shader compilation, uniforms, buffer management
    - **WASM Loader** (`wasm/loader.ts`)
-     - Type definitions for WASM exports (Vec2, Platform, InputState, AnimationState, Particle, Game interface)
-     - Dynamic module loading via `createGameModule()`
+     - Type definitions for WASM exports (Vec2, Platform, InputState, Game interface, GameModule with HEAPF32)
+     - Dynamic import of the `createWasmModule` ES module factory
    - **Audio** (`audio/AudioManager.ts`)
      - Web Audio API wrapper for SFX playback and looped music
 
@@ -60,10 +60,8 @@ Bolts & Volts is a 2D platformer combining C++ game logic with a React/WebGL2 fr
 1. React renders `GameCanvas` with a canvas element
 2. On mount, `GameCanvas` loads WASM module and textures in parallel
 3. Game loop (via `requestAnimationFrame`):
-   - Poll input from `keysRef` (ArrowLeft, ArrowRight, Space)
-   - Call `gameInstance.handleInput()` with InputState
-   - Call `gameInstance.update(deltaTime)` to advance physics/animation
-   - Retrieve player position, platforms, particles, and animation state from WASM
+   - Accumulate real time; per whole 1/60 s tick (max 4), call `handleInput()` then `update(1/60)`
+   - Call `captureFrame()` once and decode the snapshot (`src/game/snapshot.ts`)
    - Render via `Renderer.drawScene()`
 4. WASM calls back to JavaScript via `setSoundCallback` for audio events
 

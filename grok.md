@@ -51,7 +51,7 @@ TS/React (src/)
   audio/AudioManager.ts  — music/SFX via Web Audio, resumes on gesture
 ```
 
-**Important**: The WASM glue is an ES module factory named `createWasmModule` (see package.json build:wasm). The loader still contains legacy fallback paths for older `game.js` + `createGameModule` names — keep them in sync.
+**Important**: The WASM glue is an ES module factory named `createWasmModule` (see package.json build:wasm). The legacy `game.js` / `createGameModule` loader fallbacks were removed; `loader.ts` only dynamic-imports `src/wasm/main.js`.
 
 ## Directory Structure (Relevant)
 
