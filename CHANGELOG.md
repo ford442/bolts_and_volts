@@ -6,6 +6,7 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- Physics broadphase: `cpp/src/sim/PlatformGrid` (uniform 4-unit grid over static platforms, built in `Simulation::loadLevel`). The vertical and horizontal resolves test only its candidates, in ascending index order with a re-query after each push, so every trace is bit-identical to the old full scan (checked against it on 600k random ticks). New native cases: a fall with 300 distant platforms lands like the same fall alone; overlapping platforms push out in index order, including a push into a platform in another cell.
 - Multi-layer background rendering from level JSON (`backgroundLayers`) with per-layer parallax/scale/offset.
 - Decor pipeline (`decor`) for non-colliding depth-aware visuals with per-item texture/parallax/layer controls.
 - Level manifest support (`public/levels/manifest.json`) with runtime level switching and level metadata overlay.
@@ -28,6 +29,7 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- The frame snapshot no longer carries platforms or goals (`FrameLayout` / `FRAME`: `PLATFORM_COUNT`, `GOAL_COUNT` and `BOX_STRIDE` removed; header slots 12-13 reserved). They are static per `loadLevel`, so `SceneAssets` in `src/game/loop.ts` holds the arrays passed to it and `drawScene` reads those. The e2e wasm stub serves scene geometry as the level JSON.
 - The monospace debug status line (`[BOLTS] pos: x,y | Ability: READY`) is replaced by the ability overlay, so the player position is no longer shown (the `H` authoring HUD still shows mouse and camera world coordinates). `drawScene`'s unused `character` parameter became `playerTint`. `tests/e2e/render-count.spec.ts` now watches the HUD bar change every frame instead of the position text, and the e2e WASM stub can report a character, ability state and draining cooldown.
 - Simulation split out of `Game.cpp`. `cpp/src/sim/Simulation.{hpp,cpp}` owns the player body, platforms, goals, character/ability, camera and animation state, takes a parsed `LevelSpec` and includes no emscripten. `Game` is now the embind adapter (same embind methods, same snapshot). The sim reports `SimEvent`s (`Jumped`, `Landed`, `PoundImpact`, `HoverTick`, …), which `Game` turns into particles, sounds and the level-complete callback. `ParticleSystem` owns a seeded xorshift32 instead of calling the unseeded `rand()`, so a replay of the simulation is deterministic and particle flavour is off the collision path. Ability magic numbers moved to `CharacterStats` (`BOLTS_GROUND_POUND_DURATION`, `…_KEEP_VX`, `VOLTS_HOVER_KEEP_FALL`, `SWITCH_KEEP_VX`).
 - Ground detection now comes from the vertical resolve (step, resolve Y, then set grounded) instead of a probe at the previous position. Takeoff and flight are unchanged, and jump apex heights are identical to before (Bolts 0.909, Volts 1.130 above the takeoff point). The changes are at the ground: landings stop exactly on the platform (they used to stop up to ~0.1 above it), the `land` sound and particles fire on the tick of contact, and coyote jumps now get the full jump strength (they were ~one gravity tick weaker than ground jumps).

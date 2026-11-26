@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { normalizeLevelData } from '../../src/lib/levelData';
+import { DEFAULT_PLATFORMS, normalizeLevelData } from '../../src/lib/levelData';
 
 const base = {
   spawn: { x: 0, y: -1 },
@@ -64,5 +64,26 @@ describe('normalizeLevelData — courier entities', () => {
     expect(coreLevel.payload).toBeDefined();
     expect(coreLevel.terminals).toEqual([expect.objectContaining({ disablesHazard: 1 })]);
     expect(coreLevel.hazards?.[1].patrol).toBeUndefined(); // the gate the terminal opens is the static one
+  });
+});
+
+describe('DEFAULT_PLATFORMS', () => {
+  it("matches Game.cpp's defaultLevel(), which a new Game collides with until the first loadLevel", () => {
+    // The snapshot no longer carries platforms, so before any level loads the renderer draws this list.
+    const source = readFileSync('cpp/src/Game.cpp', 'utf8');
+    const body = source.slice(source.indexOf('LevelSpec defaultLevel()'));
+    const start = body.indexOf('level.platforms = {');
+    const block = body.slice(start, body.indexOf('\n    };', start));
+    const num = String.raw`(-?\d+(?:\.\d+)?)f`;
+    const entry = new RegExp(String.raw`\{\s*\{${num},\s*${num}\},\s*\{${num},\s*${num}\}\s*\}`, 'g');
+    const parsed = [...block.matchAll(entry)].map((m) => ({
+      position: { x: Number(m[1]), y: Number(m[2]) },
+      size: { x: Number(m[3]), y: Number(m[4]) },
+    }));
+    expect(parsed).toEqual(DEFAULT_PLATFORMS);
+  });
+
+  it('is what a level without valid platforms falls back to', () => {
+    expect(normalizeLevelData({ platforms: [] }).coreLevel.platforms).toEqual(DEFAULT_PLATFORMS);
   });
 });

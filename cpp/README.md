@@ -37,7 +37,7 @@ The built module reports 256 pages initial, 1024 pages maximum.
 - Staying off, on purpose: SIMD, pthreads / `SHARED_MEMORY` (no cross-origin isolation needed to host the game), exceptions (`DISABLE_EXCEPTION_CATCHING=1`; nothing in `cpp/src` throws and JSON stays in TypeScript, so revisit only if that changes) and the filesystem (`FILESYSTEM=0`).
 - All JS calls go through embind, so `ccall`/`cwrap` and `_malloc`/`_free` are not exported. If a future zero-copy snapshot needs `_malloc`, export only that.
 - `-sSTRICT=1` was trialed on 6.0.13 and not adopted: on top of these files the link fails (`entry symbol not defined: main`; the module has no `main`), so it is not a free repeat of settings already made here. Revisit only with a reason to take on that extra flag work.
-- New `.cpp` files must be added to `emscripten-common.response` (currently `main.cpp`, `Game.cpp`, `sim/Simulation.cpp`).
+- New `.cpp` files must be added to `emscripten-common.response` (currently `main.cpp`, `Game.cpp`, `sim/Simulation.cpp`, `sim/PlatformGrid.cpp`) and, if the sim uses them, to `scripts/test-sim.sh`.
 
 ## Native simulation tests
 

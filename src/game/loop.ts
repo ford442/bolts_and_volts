@@ -1,6 +1,6 @@
 import type { BackgroundLayer, DecorLayers, Renderer, SceneEntities, TextureObject } from '../gl/renderer';
 import type { AuthoringOverlay } from '../lib/authoring';
-import type { Game, GameModule } from '../wasm/loader';
+import type { Game, GameModule, Platform } from '../wasm/loader';
 import type { KeyboardInput } from './input';
 import { characterPresentation } from './characters';
 import { createFrameState, readFrame, viewFrame, type FrameState } from './snapshot';
@@ -34,7 +34,14 @@ export type SceneAssets = {
   platformTexture: TextureObject;
   backgroundLayers: BackgroundLayer[];
   decorLayers: DecorLayers;
+  /**
+   * The level's static geometry, exactly as passed to `Game::loadLevel` (the snapshot does not carry it). Replace
+   * these together with every `loadLevel`, or they stop matching what the simulation collides with.
+   */
+  platforms: Platform[];
+  /** Index-aligned with `platforms`. */
   platformVisualFlags: boolean[];
+  goals: Platform[];
 };
 
 export type GameLoopOptions = {
@@ -88,7 +95,7 @@ export const startGameLoop = (options: GameLoopOptions): (() => void) => {
       frame.camera,
       frame.player.position,
       frame.player.size,
-      frame.platforms,
+      assets.platforms,
       frame.particles,
       assets.playerTexture,
       assets.platformTexture,
@@ -96,7 +103,7 @@ export const startGameLoop = (options: GameLoopOptions): (() => void) => {
       assets.decorLayers,
       assets.platformVisualFlags,
       frame.anim,
-      frame.goals,
+      assets.goals,
       characterPresentation(frame.character).tint,
       options.overlay?.(frame) ?? null,
       cullDebug,

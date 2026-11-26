@@ -840,3 +840,108 @@ TEST_CASE("the terminal shares the ability key without stealing it") {
     CHECK(count(again, SimEventType::HoverStarted) == 1);
     CHECK_FALSE(has(again, SimEventType::TerminalUsed));
 }
+
+// --- Broadphase: the platform grid only narrows the walk ------------------------------------------------------
+
+TEST_CASE("a short fall onto a thin platform lands the same with hundreds of distant platforms in the level") {
+    // Feet 1 unit above a 0.2-thick platform (top 0.1). The crowd is 0.2 thick or more, so the thinnest platform
+    // (and with it the substep count) is the same in both levels, and none of it is within 10 units of the fall.
+    LevelSpec solo;
+    solo.spawn = Vec2{0.0f, 1.5f};
+    solo.platforms = {box(0.0f, 0.0f, 2.0f, 0.2f)};
+    LevelSpec crowded = solo;
+    for (int i = 0; i < 300; ++i) {
+        const float x = (i % 2 == 0 ? 12.0f : -312.0f) + static_cast<float>((i / 2) % 50) * 6.0f;
+        const float y = -40.0f + static_cast<float>(i / 100) * 30.0f + static_cast<float>(i % 7) * 1.5f;
+        crowded.platforms.push_back(box(x, y, 1.0f + static_cast<float>(i % 5) * 0.5f, 0.2f + static_cast<float>(i % 3) * 0.3f));
+    }
+    REQUIRE(crowded.platforms.size() == 301);
+
+    Simulation a = load(solo);
+    Simulation b = load(crowded);
+    // The grid is what keeps the crowd out of the resolve: at the spawn, only the floor is a candidate.
+    std::vector<int> candidates;
+    b.platformGrid().query(b.player().position, b.player().size, candidates);
+    CHECK(candidates.size() < 5);
+
+    int landedA = -1;
+    int landedB = -1;
+    for (int t = 1; t <= 120; ++t) {
+        CAPTURE(t);
+        if (has(tick(a), SimEventType::Landed) && landedA < 0) landedA = t;
+        if (has(tick(b), SimEventType::Landed) && landedB < 0) landedB = t;
+        REQUIRE(a.player().position.x == b.player().position.x);
+        REQUIRE(a.player().position.y == b.player().position.y);
+        REQUIRE(a.player().velocity.y == b.player().velocity.y);
+        REQUIRE(a.player().grounded == b.player().grounded);
+    }
+    REQUIRE(landedA > 1);
+    CHECK(landedB == landedA);
+    CHECK(feet(b) == doctest::Approx(0.1f));
+}
+
+TEST_CASE("overlapping platforms push the player out in ascending index order, like a walk over the list") {
+    // `tall` (top 2.0) pushes a body whose centre is above its own up; `ceiling` pushes one whose centre is below
+    // its own down. Which one acts first decides where the body ends up. First tick from rest: gravity moves the
+    // spawn down by ~0.003, too little to change any of the overlaps below.
+    const Platform tall = box(0.0f, 0.0f, 2.0f, 4.0f);
+    const float halfH = 0.4f;  // PlayerBody height 0.8
+    const auto run = [](const Platform& first, const Platform& second, float spawnY) {
+        LevelSpec level;
+        level.spawn = Vec2{0.0f, spawnY};
+        level.platforms = {first, second};
+        Simulation sim = load(level);
+        tick(sim);
+        return sim;
+    };
+    const auto above = [halfH](const Platform& p) { return p.position.y + (2.0f * halfH + p.size.y) * 0.5f; };
+    const auto below = [halfH](const Platform& p) { return p.position.y - (2.0f * halfH + p.size.y) * 0.5f; };
+    const float sideX = -(0.5f + tall.size.x) * 0.5f;  // flush left of either platform (both 2 wide, centred on 0)
+
+    SUBCASE("both overlapping from the start") {
+        const Platform ceiling = box(0.0f, 2.3f, 2.0f, 0.2f);  // y in [2.2, 2.4]
+        const float spawnY = 1.85f;                            // y in [1.45, 2.25]: inside both
+        {
+            // tall: up to 2.4, now centred above the ceiling's centre, so the ceiling pushes it up again, to rest.
+            const Simulation sim = run(tall, ceiling, spawnY);
+            CHECK(sim.player().position.y == above(ceiling));
+            CHECK(sim.player().position.x == 0.0f);
+            CHECK(sim.player().grounded);
+        }
+        {
+            // ceiling: down to 1.8, then tall: up to 2.4, under the ceiling, which the horizontal pass then resolves.
+            const Simulation sim = run(ceiling, tall, spawnY);
+            CHECK(sim.player().position.y == above(tall));
+            CHECK(sim.player().position.x == sideX);
+        }
+    }
+    SUBCASE("a push carries the body into a platform it did not touch before, in another grid cell") {
+        const Platform ceiling = box(0.0f, 2.5f, 2.0f, 0.2f);  // y in [2.4, 2.6]
+        const float spawnY = 1.5f;                             // y in [1.1, 1.9]: inside tall only
+        {
+            // The first query cannot see the ceiling: it is only reached after tall's push, so the walk must look again.
+            Simulation probe;
+            LevelSpec level;
+            level.spawn = Vec2{0.0f, spawnY};
+            level.platforms = {tall, ceiling};
+            probe.loadLevel(level);
+            std::vector<int> candidates;
+            probe.platformGrid().query(probe.player().position, probe.player().size, candidates);
+            REQUIRE(candidates == std::vector<int>{0});
+        }
+        {
+            // tall: up to 2.4, into the ceiling (centre below its centre), which pushes it down to 2.0; the horizontal
+            // pass then finds tall overlapping and moves the body off its side.
+            const Simulation sim = run(tall, ceiling, spawnY);
+            CHECK(sim.player().position.y == below(ceiling));
+            CHECK(sim.player().position.x == sideX);
+        }
+        {
+            // ceiling first: not touched yet, so its turn has passed; tall then pushes the body up to 2.4, into the
+            // ceiling, and the vertical pass stops there. The horizontal pass finds the ceiling and moves the body aside.
+            const Simulation sim = run(ceiling, tall, spawnY);
+            CHECK(sim.player().position.y == above(tall));
+            CHECK(sim.player().position.x == sideX);
+        }
+    }
+}

@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "../Types.hpp"
+#include "PlatformGrid.hpp"
 #include "SimEvent.hpp"
 
 struct LevelBounds { Vec2 min; Vec2 max; };
@@ -65,6 +66,7 @@ public:
     const Vec2& camera() const { return camera_; }
     const AnimationState& animation() const { return animation_; }
     const std::vector<Platform>& platforms() const { return platforms_; }
+    const PlatformGrid& platformGrid() const { return platformGrid_; }
     const std::vector<Platform>& goals() const { return goals_; }
     const std::vector<Hazard>& hazards() const { return hazards_; }
     const std::optional<Payload>& payload() const { return payload_; }
@@ -88,6 +90,7 @@ private:
     bool resolveVertical();
     int verticalSubsteps(float move) const;
     void moveHorizontal(float dt);
+    template <typename Push> bool resolvePlatforms(Push push);
     void updateGroundState(bool wasGrounded, float dt);
     void updateAnimation(float dt);
     void updateCamera(float dt);
@@ -106,6 +109,8 @@ private:
     std::optional<LevelBounds> bounds_;
 
     std::vector<Platform> platforms_;
+    PlatformGrid platformGrid_;       // broadphase over platforms_, built in loadLevel
+    std::vector<int> candidates_;     // scratch for platformGrid_ queries
     std::vector<Platform> goals_;
     std::vector<bool> goalReached_;
     float minPlatformHalfHeight_ = 0.0f;

@@ -69,7 +69,8 @@ struct AnimationState {
 };
 
 // Float layout of the per-frame snapshot written by Game::captureFrame(). Mirrored in
-// src/game/snapshot.ts (FRAME_HEADER etc.) — change both together.
+// src/game/snapshot.ts (FRAME) — change both together. Only what moves or changes state is in it: platforms and
+// goals are static for the life of a loadLevel, so the TypeScript side keeps the arrays it passed in.
 namespace FrameLayout {
     constexpr int PLAYER_X = 0;
     constexpr int PLAYER_Y = 1;
@@ -83,15 +84,13 @@ namespace FrameLayout {
     constexpr int CHARACTER = 9;       // CharacterType as int
     constexpr int ABILITY_STATE = 10;  // AbilityState as int
     constexpr int ABILITY_COOLDOWN = 11; // 0..1
-    constexpr int PLATFORM_COUNT = 12;
-    constexpr int GOAL_COUNT = 13;
+    // Slots 12-13 are reserved and written as 0 (they held the platform and goal counts).
     constexpr int PARTICLE_COUNT = 14;
     constexpr int HAZARD_COUNT = 15;
     constexpr int PAYLOAD_COUNT = 16;  // 0 or 1
     constexpr int TERMINAL_COUNT = 17;
-    constexpr int HEADER_SIZE = 20;    // slots 18-19 reserved
-    // Body order: platforms, goals (BOX_STRIDE), hazards, payload, terminals (ENTITY_STRIDE), particles.
-    constexpr int BOX_STRIDE = 4;      // platforms and goals: x, y, w, h
+    constexpr int HEADER_SIZE = 20;    // slots 12-13 and 18-19 reserved
+    // Body order: hazards, payload, terminals (ENTITY_STRIDE), particles.
     constexpr int ENTITY_STRIDE = 5;   // x, y, w, h, flag (hazard enabled / payload carried / terminal used)
     constexpr int PARTICLE_STRIDE = 4; // x, y, size, life / maxLife
 }

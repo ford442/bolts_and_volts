@@ -1,6 +1,5 @@
 #include "Game.hpp"
 #include <algorithm>
-#include <initializer_list>
 
 using emscripten::val;
 
@@ -216,8 +215,6 @@ std::string Game::getLevelDescription() const { return levelDescription; }
 
 int Game::captureFrame() {
     using namespace FrameLayout;
-    const std::vector<Platform>& platforms = sim.platforms();
-    const std::vector<Platform>& goals = sim.goals();
     const std::vector<Hazard>& hazards = sim.hazards();
     const std::optional<Payload>& payload = sim.payload();
     const std::vector<Terminal>& terminals = sim.terminals();
@@ -226,11 +223,11 @@ int Game::captureFrame() {
     const AnimationState& animation = sim.animation();
     const size_t payloadCount = payload ? 1 : 0;
     const size_t length = HEADER_SIZE
-        + (platforms.size() + goals.size()) * BOX_STRIDE
         + (hazards.size() + payloadCount + terminals.size()) * ENTITY_STRIDE
         + particles.size() * PARTICLE_STRIDE;
     frameBuffer.resize(length);
     float* out = frameBuffer.data();
+    std::fill(out, out + HEADER_SIZE, 0.0f);  // reserved slots stay 0
 
     out[PLAYER_X] = player.position.x;
     out[PLAYER_Y] = player.position.y;
@@ -244,24 +241,14 @@ int Game::captureFrame() {
     out[CHARACTER] = static_cast<float>(getCurrentCharacter());
     out[ABILITY_STATE] = static_cast<float>(getAbilityState());
     out[ABILITY_COOLDOWN] = getAbilityCooldownPercent();
-    out[PLATFORM_COUNT] = static_cast<float>(platforms.size());
-    out[GOAL_COUNT] = static_cast<float>(goals.size());
     out[PARTICLE_COUNT] = static_cast<float>(particles.size());
     out[HAZARD_COUNT] = static_cast<float>(hazards.size());
     out[PAYLOAD_COUNT] = static_cast<float>(payloadCount);
     out[TERMINAL_COUNT] = static_cast<float>(terminals.size());
-    for (int slot = TERMINAL_COUNT + 1; slot < HEADER_SIZE; ++slot) out[slot] = 0.0f;
 
+    // Platforms and goals are not in the snapshot: they cannot change after loadLevel, and the renderer draws the
+    // arrays src/game/loop.ts kept from the level it passed in.
     float* cursor = out + HEADER_SIZE;
-    for (const std::vector<Platform>* boxes : { &platforms, &goals }) {
-        for (const Platform& b : *boxes) {
-            cursor[0] = b.position.x;
-            cursor[1] = b.position.y;
-            cursor[2] = b.size.x;
-            cursor[3] = b.size.y;
-            cursor += BOX_STRIDE;
-        }
-    }
     const auto writeEntity = [&cursor](const Vec2& position, const Vec2& size, bool flag) {
         cursor[0] = position.x;
         cursor[1] = position.y;
