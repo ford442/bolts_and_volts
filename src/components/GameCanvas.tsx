@@ -175,6 +175,7 @@ const GameCanvas = () => {
     if (!canvas) return;
     let stopLoop: (() => void) | null = null;
     let gameInstance: Game | null = null;
+    let rendererInstance: Renderer | null = null;
     // Set by cleanup. React StrictMode runs this effect twice in dev, and the first run's async init would
     // otherwise carry on as a second game + renderer on the same canvas (never resized, drawn over the live one).
     let disposed = false;
@@ -200,7 +201,9 @@ const GameCanvas = () => {
         game.setSoundCallback((soundName: string) => audioManager.playSfx(soundName));
         game.setLevelCompleteCallback(() => setLevelComplete(true));
 
+        // Handles webglcontextlost/restored itself: the loop below pauses on loss and resumes once textures are back.
         const renderer = new Renderer(canvas, vertexShaderSource, fragmentShaderSource, backgroundVertexSource, backgroundFragmentSource);
+        rendererInstance = renderer;
         const applyPendingSize = () => {
           if (!pendingSize) return;
           renderer.resize(pendingSize);
@@ -371,6 +374,7 @@ const GameCanvas = () => {
       disposed = true;
       stopObservingSize();
       stopLoop?.();
+      rendererInstance?.dispose();
       input.dispose();
       reloadLevelRef.current = null;
       gameInstanceRef.current = null;

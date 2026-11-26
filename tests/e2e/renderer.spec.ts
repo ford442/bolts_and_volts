@@ -8,7 +8,10 @@ type Rig = {
   renderer: {
     resize(size: { width: number; height: number; pixelRatio: number }): void;
     setCollisionDebug(on: boolean): void;
-    getCullStats(): { entities: { drawn: number; total: number } };
+    getCullStats(): { entities: { drawn: number; total: number }; platforms: { drawn: number; total: number } };
+    getDrawStats(): { drawCalls: number; instances: number };
+    isContextLost(): boolean;
+    onContextChange(listener: (status: 'lost' | 'restored') => void): () => void;
   };
   canvas: HTMLCanvasElement;
   gl: WebGL2RenderingContext;
@@ -100,6 +103,33 @@ test('retries once without `desynchronized` when the first context request is re
       const desynchronized = (attrs as { desynchronized?: unknown } | undefined)?.desynchronized;
       if (type === 'webgl2') calls.push({ desynchronized });
       if (type === 'webgl2' && desynchronized === true) return null; // simulate a browser rejecting the hint
+      return (original as (...a: unknown[]) => unknown).call(this, type, attrs);
+    } as typeof original;
+    try {
+      const [{ Renderer }, vs, fs, bvs, bfs] = await Promise.all([
+        import('/src/gl/renderer.ts'),
+        import('/src/gl/shaders/tex.vert.glsl?raw').then((m) => m.default),
+        import('/src/gl/shaders/tex.frag.glsl?raw').then((m) => m.default),
+        import('/src/gl/shaders/background.vert.glsl?raw').then((m) => m.default),
+        import('/src/gl/shaders/background.frag.glsl?raw').then((m) => m.default),
+      ]);
+      new Renderer(document.createElement('canvas'), vs, fs, bvs, bfs);
+    } finally {
+      HTMLCanvasElement.prototype.getContext = original;
+    }
+    return calls;
+  });
+  expect(requests).toEqual([{ desynchronized: true }, { desynchronized: false }]);
+});
+
+test('retries once without `desynchronized` when the first context request throws', async ({ page }) => {
+  const requests = await page.evaluate(async () => {
+    const calls: Array<{ desynchronized: unknown }> = [];
+    const original = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement, type: string, attrs?: unknown) {
+      const desynchronized = (attrs as { desynchronized?: unknown } | undefined)?.desynchronized;
+      if (type === 'webgl2') calls.push({ desynchronized });
+      if (type === 'webgl2' && desynchronized === true) throw new TypeError('desynchronized is not supported'); // a throwing rejection
       return (original as (...a: unknown[]) => unknown).call(this, type, attrs);
     } as typeof original;
     try {
@@ -262,4 +292,80 @@ test('hazards, terminals and the payload draw as flat quads, faded once switched
   close(px.terminalUsed, [44, 77, 61]);
   expect(px.liveStats).toEqual({ drawn: 3, total: 3 });
   expect(px.offStats).toEqual({ drawn: 2, total: 3 }); // the hazard at x = 40 is culled
+});
+
+test('sprites sharing a texture draw as one instanced call; a texture change starts the next, culled sprites add none', async ({ page }) => {
+  await createRig(page);
+  const result = await page.evaluate(() => {
+    const rig = window.__rig!;
+    // 60 platforms on screen plus 40 far off to the right (culled), all with the same white texture.
+    const platforms = [
+      ...Array.from({ length: 60 }, (_, i) => ({ position: { x: -4.5 + (i % 10), y: -2 + Math.floor(i / 10) * 0.5 }, size: { x: 0.8, y: 0.2 } })),
+      ...Array.from({ length: 40 }, (_, i) => ({ position: { x: 100 + i, y: 0 }, size: { x: 0.8, y: 0.2 } })),
+    ];
+    rig.draw({ platforms, whitePlatforms: true });
+    const platformsOnly = { ...rig.renderer.getDrawStats(), cull: { ...rig.renderer.getCullStats().platforms } };
+    // Goals are a different texture drawn after the platforms: one more range, one more call.
+    rig.draw({ platforms, whitePlatforms: true, goals: [{ position: { x: 0, y: 2 }, size: { x: 1, y: 1 } }, { position: { x: 2, y: 2 }, size: { x: 1, y: 1 } }] });
+    const withGoals = { ...rig.renderer.getDrawStats() };
+    return { platformsOnly, withGoals };
+  });
+  expect(result.platformsOnly).toEqual({ drawCalls: 1, instances: 60, cull: { drawn: 60, total: 100 } });
+  expect(result.withGoals).toEqual({ drawCalls: 2, instances: 62 });
+});
+
+// Playwright cannot dispatch a real GPU reset, but WEBGL_lose_context makes the browser lose and restore the context
+// for real: the actual webglcontextlost / webglcontextrestored events, with every GL object gone in between.
+test('after a context loss and restore, the same renderer draws the same frame again without a reload', async ({ page }) => {
+  await createRig(page);
+  const result = await page.evaluate(async () => {
+    const rig = window.__rig!;
+    const scene = {
+      player: { tint: [1.0, 0.78, 0.45, 1.0] as [number, number, number, number] }, // white loaded image, warm tint
+      platforms: [{ position: { x: 3, y: 0 }, size: { x: 1, y: 1 } }],
+      whitePlatforms: true,
+      goals: [{ position: { x: -3, y: 0 }, size: { x: 1, y: 1 } }],
+    };
+    const at = (frame: Frame, worldX: number) => {
+      const i = ((frame.height >> 1) * frame.width + (frame.width >> 1) + Math.round(worldX * 32)) * 4;
+      return [frame.pixels[i], frame.pixels[i + 1], frame.pixels[i + 2]];
+    };
+    const sample = (frame: Frame) => ({ player: at(frame, 0), platform: at(frame, 3), goal: at(frame, -3) });
+    const before = sample(rig.draw(scene));
+
+    const ext = rig.gl.getExtension('WEBGL_lose_context')!;
+    const statuses: string[] = [];
+    rig.renderer.onContextChange((status) => statuses.push(status));
+    const next = (status: string) => new Promise<void>((resolve) => {
+      const off = rig.renderer.onContextChange((s) => { if (s === status) { off(); resolve(); } });
+    });
+    const lostEvent = next('lost');
+    ext.loseContext();
+    await lostEvent;
+    // Chrome only allows restoreContext once the lost event's dispatch has returned (it checks defaultPrevented
+    // then); the promise above resumes inside that dispatch, so yield one task first.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const lostFlag = rig.renderer.isContextLost();
+    rig.draw(scene); // must be a harmless no-op while lost
+    const drawCallsWhileLost = rig.renderer.getDrawStats().drawCalls;
+
+    const restoredEvent = next('restored');
+    ext.restoreContext();
+    await restoredEvent;
+    const after = sample(rig.draw(scene));
+    return { before, after, lostFlag, drawCallsWhileLost, lostAfter: rig.renderer.isContextLost(), statuses, drawCallsAfter: rig.renderer.getDrawStats().drawCalls };
+  });
+  expect(result.lostFlag).toBe(true);
+  expect(result.drawCallsWhileLost).toBe(0);
+  expect(result.lostAfter).toBe(false);
+  expect(result.statuses).toEqual(['lost', 'restored']);
+  expect(result.drawCallsAfter).toBeGreaterThan(0);
+  const close = (actual: number[], expected: number[]) => {
+    for (let i = 0; i < 3; i++) expect(Math.abs(actual[i] - expected[i])).toBeLessThanOrEqual(2);
+  };
+  close(result.before.player, [255, 199, 115]);
+  close(result.before.platform, [255, 255, 255]);
+  close(result.after.player, result.before.player); // the loaded image texture was uploaded again
+  close(result.after.platform, result.before.platform);
+  close(result.after.goal, result.before.goal); // solid textures too
 });
