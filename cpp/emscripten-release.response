@@ -1,2 +1,3 @@
 -O3
+-flto
 -sASSERTIONS=0

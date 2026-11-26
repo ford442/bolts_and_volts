@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "npm run build:wasm:debug && vite",
-    "build:wasm": "sh ./scripts/with-emsdk.sh emcc @cpp/emscripten-common.response @cpp/emscripten-release.response",
-    "build:wasm:debug": "sh ./scripts/with-emsdk.sh emcc @cpp/emscripten-common.response @cpp/emscripten-debug.response",
+    "build:wasm": "sh ./scripts/with-emsdk.sh em++ @cpp/emscripten-common.response @cpp/emscripten-release.response",
+    "build:wasm:debug": "sh ./scripts/with-emsdk.sh em++ @cpp/emscripten-common.response @cpp/emscripten-debug.response",
     "build": "npm run build:wasm && tsc && vite build",
     "build_colab": "EMSDK_PATH=/content/build_space/emsdk npm run build",
     "lint": "eslint . --max-warnings 0",

@@ -26,10 +26,11 @@ jobs:
       - name: Simulation tests (native)
         run: npm run test:sim
 
-      # Keep in sync with the emsdk version used locally (emcc --version).
+      # emsdk pin: keep equal to the version in cpp/README.md ("Toolchain pin"). Bump both together, then replay a
+      # native trace against the wasm build (see there): a compiler bump can change wasm float codegen.
       - uses: mymindstorm/setup-emsdk@v14
         with:
-          version: 3.1.61
+          version: 6.0.13
           actions-cache-folder: emsdk-cache
 
       - run: npm ci
