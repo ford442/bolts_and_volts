@@ -92,6 +92,25 @@ describe('validateLevel — platforms and goals', () => {
   });
 });
 
+describe('validateLevel — checkpoints', () => {
+  it('is silent for the documented shape, and the key is not "unknown"', () => {
+    expect(validateLevel({ ...validLevel(), checkpoints: [{ position: { x: 3, y: -2 }, size: { x: 1, y: 1 }, label: 'flag' }] })).toEqual([]);
+  });
+
+  it('flags a non-array, bad entries and a checkpoint with no area', () => {
+    expect(paths({ ...validLevel(), checkpoints: 'x' })).toEqual(['error:checkpoints']);
+    expect(paths({
+      ...validLevel(),
+      checkpoints: [3, { position: { x: 1, y: 'a' }, size: { x: 1, y: 1 } }, { position: { x: 1, y: 1 }, size: { x: 0, y: 1 }, colour: 'red' }],
+    })).toEqual([
+      'error:checkpoints[0]',
+      'error:checkpoints[1].position.y',
+      'warning:checkpoints[2].colour',
+      'warning:checkpoints[2].size',
+    ]);
+  });
+});
+
 describe('validateLevel — hazards, payload, terminals', () => {
   const courier = () => ({
     ...validLevel(),

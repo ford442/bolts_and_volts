@@ -156,6 +156,7 @@ public:
                 }
                 break;
             case SimEventType::PayloadPickedUp:
+            case SimEventType::CheckpointReached:
             case SimEventType::TerminalUsed: {
                 const Vec2 origin = { at.x, at.y + playerSize.y * 0.5f };
                 for (int i = 0; i < 8; ++i) {

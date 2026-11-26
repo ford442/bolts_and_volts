@@ -21,6 +21,13 @@ export interface Game {
   setSoundCallback(callback: (soundName: string) => void): void;
   loadLevel(level: CoreLevel): void;
   setLevelCompleteCallback(callback: () => void): void;
+  /** Called with the checkpoint's index (into the level's `checkpoints`) each time the player enters one. */
+  setCheckpointCallback(callback: (index: number) => void): void;
+  /**
+   * Re-apply a saved checkpoint after `loadLevel` (which always resets to the spawn): the player is put on it, at
+   * rest, and it becomes the respawn point. False, and nothing changes, when the level has no such checkpoint.
+   */
+  restoreCheckpoint(index: number): boolean;
   // Two-character (Bolts / Volts) system
   switchCharacter(): void;
   getCurrentCharacter(): number; // 0 = Bolts, 1 = Volts

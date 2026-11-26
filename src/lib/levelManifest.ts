@@ -5,6 +5,11 @@ export type LevelManifestEntry = {
   description?: string;
   author?: string;
   music?: string;
+  /**
+   * Id of the level the complete screen offers next. Only that screen follows it: the dropdown and the 1-9 keys can
+   * still jump anywhere. Absent, blank or naming no entry: the route ends there (`resolveNextLevel`).
+   */
+  next?: string;
 };
 
 export const DEFAULT_LEVELS: LevelManifestEntry[] = [
@@ -32,6 +37,7 @@ export const normalizeLevelManifest = (manifest: unknown): LevelManifestEntry[] 
       description: isString(item.description) ? item.description : undefined,
       author: isString(item.author) ? item.author : undefined,
       music: isString(item.music) ? item.music : undefined,
+      next: isString(item.next) && item.next.trim() ? item.next.trim() : undefined,
     });
   }
 

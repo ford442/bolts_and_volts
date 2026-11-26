@@ -945,3 +945,169 @@ TEST_CASE("overlapping platforms push the player out in ascending index order, l
         }
     }
 }
+
+// --- Checkpoints -----------------------------------------------------------------------------------------------
+
+namespace {
+
+// A trigger the player's resting centre height (0.5 on floorLevel) sits in the middle of. Walking in from x = 0 enters it
+// at x ~ 2.25; the player (0.5 wide) has left it again once x > 3.75.
+Platform checkpointAt(float x) { return box(x, 0.5f, 1.0f, 1.0f); }
+
+int checkpointEvents(const Events& events) { return count(events, SimEventType::CheckpointReached); }
+
+// Floor, checkpoint 0 at x = 3 and a static hazard at x = 6 (the player is clear of it until x > 5.45).
+LevelSpec checkpointLevel() {
+    LevelSpec level = floorLevel();
+    level.checkpoints = {checkpointAt(3.0f)};
+    level.hazards = {staticHazard(6.0f, 0.4f, 0.6f, 0.6f)};
+    return level;
+}
+
+} // namespace
+
+TEST_CASE("overlapping a checkpoint moves the respawn point to its centre and says which one") {
+    LevelSpec level = floorLevel();
+    level.checkpoints = {checkpointAt(3.0f), checkpointAt(8.0f)};
+    Simulation sim = load(level);
+    settle(sim);
+    CHECK(sim.respawnPoint().x == 0.0f);
+    CHECK(sim.activeCheckpoint() == -1);
+
+    const Events events = walkUntil(sim, SimEventType::CheckpointReached);
+    REQUIRE(checkpointEvents(events) == 1);
+    const SimEvent reached = *std::find_if(events.begin(), events.end(), [](const SimEvent& e) { return e.type == SimEventType::CheckpointReached; });
+    CHECK(reached.index == 0);
+    CHECK(sim.activeCheckpoint() == 0);
+    CHECK(sim.respawnPoint().x == 3.0f);
+    CHECK(sim.respawnPoint().y == 0.5f);
+
+    // Only checkpoints entered count: the later one takes over, the earlier is not restored by walking back.
+    const Events second = walkUntil(sim, SimEventType::CheckpointReached);
+    REQUIRE(checkpointEvents(second) == 1);
+    CHECK(second.front().index == 1);
+    CHECK(sim.activeCheckpoint() == 1);
+    CHECK(sim.respawnPoint().x == 8.0f);
+}
+
+TEST_CASE("a checkpoint fires once while the player stays in it, and again after they leave and come back") {
+    Simulation sim = load(checkpointLevel());
+    settle(sim);
+
+    int fired = checkpointEvents(walkUntil(sim, SimEventType::CheckpointReached));
+    REQUIRE(fired == 1);
+    // Keep touching it: coast to a stop and stand still, then step about inside it.
+    for (int i = 0; i < 60; ++i) fired += checkpointEvents(tick(sim));
+    for (int i = 0; i < 6; ++i) fired += checkpointEvents(tick(sim, LEFT));
+    for (int i = 0; i < 6; ++i) fired += checkpointEvents(tick(sim, RIGHT));
+    REQUIRE(sim.player().position.x > 2.5f - 0.25f);
+    REQUIRE(sim.player().position.x < 3.5f + 0.25f);
+    CHECK(fired == 1);
+
+    // Out the right side (hazard is further on), then back in: re-armed.
+    for (int i = 0; i < 400 && sim.player().position.x <= 4.2f; ++i) fired += checkpointEvents(tick(sim, RIGHT));
+    REQUIRE(sim.player().position.x > 4.2f);
+    for (int i = 0; i < 20; ++i) fired += checkpointEvents(tick(sim));
+    CHECK(fired == 1);
+    fired += checkpointEvents(walkUntil(sim, SimEventType::CheckpointReached, LEFT));
+    CHECK(fired == 2);
+}
+
+TEST_CASE("a hazard hit respawns at the latest checkpoint, at rest, without re-announcing it") {
+    Simulation sim = load(checkpointLevel());
+    settle(sim);
+    walkUntil(sim, SimEventType::CheckpointReached);
+
+    const Events events = walkUntil(sim, SimEventType::Respawned);
+    CHECK(checkpointEvents(events) == 0);
+    CHECK(sim.player().position.x == 3.0f);
+    CHECK(sim.player().position.y == 0.5f);
+    CHECK(sim.player().velocity.x == 0.0f);
+    CHECK(sim.player().velocity.y == 0.0f);
+    CHECK(sim.activeCheckpoint() == 0);
+
+    // Standing on the point it put the player back at is not a new arrival; and it can happen again.
+    int fired = 0;
+    for (int i = 0; i < 30; ++i) fired += checkpointEvents(tick(sim));
+    CHECK(fired == 0);
+    walkUntil(sim, SimEventType::Respawned);
+    CHECK(sim.player().position.x == 3.0f);
+    CHECK(sim.hazards()[0].enabled);  // a respawn still resets nothing but the player (and payload)
+}
+
+TEST_CASE("without checkpoints a hazard hit still respawns at the level spawn") {
+    LevelSpec level = floorLevel();
+    level.hazards = {staticHazard(6.0f, 0.4f, 0.6f, 0.6f)};
+    Simulation sim = load(level);
+    settle(sim);
+    CHECK(sim.checkpoints().empty());
+    CHECK(sim.activeCheckpoint() == -1);
+
+    walkUntil(sim, SimEventType::Respawned);
+    CHECK(sim.player().position.x == 0.0f);
+    CHECK(sim.player().position.y == 0.6f);
+    CHECK(sim.activeCheckpoint() == -1);
+    CHECK(sim.respawnPoint().x == 0.0f);
+}
+
+TEST_CASE("a respawn at a checkpoint still puts the payload back on its pad and keeps the carry rule") {
+    LevelSpec level = checkpointLevel();
+    level.payload = payloadAt(1.0f);                // behind the checkpoint
+    level.goals = {box(7.5f, 0.6f, 1.0f, 1.0f)};    // beyond the hazard at x = 6
+    Simulation sim = load(level);
+    settle(sim);
+
+    walkUntil(sim, SimEventType::PayloadPickedUp);
+    walkUntil(sim, SimEventType::CheckpointReached);
+    requireCarriedOnTop(sim);
+    walkUntil(sim, SimEventType::Respawned);
+
+    CHECK(sim.player().position.x == 3.0f);
+    REQUIRE(sim.payload().has_value());
+    CHECK_FALSE(sim.payload()->carried);
+    CHECK(sim.payload()->position.x == 1.0f);
+
+    // Nothing carried, so the goal is inert; walking back over the pad picks the payload up again.
+    int goals = 0;
+    for (int i = 0; i < 60; ++i) goals += count(tick(sim, LEFT), SimEventType::GoalReached);
+    CHECK(sim.payload()->carried);
+    CHECK(goals == 0);
+}
+
+TEST_CASE("loadLevel forgets the checkpoint; restoreCheckpoint re-applies a saved one") {
+    LevelSpec level = checkpointLevel();
+    Simulation sim = load(level);
+    settle(sim);
+    walkUntil(sim, SimEventType::CheckpointReached);
+    REQUIRE(sim.activeCheckpoint() == 0);
+
+    sim.loadLevel(level);  // a pure reset
+    CHECK(sim.activeCheckpoint() == -1);
+    CHECK(sim.respawnPoint().x == 0.0f);
+    CHECK(sim.player().position.x == 0.0f);
+
+    SUBCASE("a valid index puts the player on it, at rest, camera included, and fires nothing") {
+        REQUIRE(sim.restoreCheckpoint(0));
+        CHECK(sim.activeCheckpoint() == 0);
+        CHECK(sim.respawnPoint().x == 3.0f);
+        CHECK(sim.player().position.x == 3.0f);
+        CHECK(sim.player().position.y == 0.5f);
+        CHECK(sim.player().velocity.x == 0.0f);
+        CHECK(sim.camera().x == 3.0f);
+        CHECK(drain(sim).empty());
+
+        int fired = 0;
+        for (int i = 0; i < 30; ++i) fired += checkpointEvents(tick(sim));
+        CHECK(fired == 0);  // already standing in it
+        walkUntil(sim, SimEventType::Respawned);
+        CHECK(sim.player().position.x == 3.0f);  // and the hazard sends it back there, not to the spawn
+    }
+
+    SUBCASE("an index the level does not have changes nothing") {
+        CHECK_FALSE(sim.restoreCheckpoint(1));
+        CHECK_FALSE(sim.restoreCheckpoint(-1));
+        CHECK(sim.activeCheckpoint() == -1);
+        CHECK(sim.respawnPoint().x == 0.0f);
+        CHECK(sim.player().position.x == 0.0f);
+    }
+}

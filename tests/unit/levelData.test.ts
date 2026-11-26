@@ -8,6 +8,26 @@ const base = {
   goals: [{ position: { x: 5, y: -2 }, size: { x: 1, y: 1 } }],
 };
 
+describe('normalizeLevelData — checkpoints', () => {
+  it('passes valid checkpoints through (position and size only) and drops bad ones', () => {
+    const { coreLevel } = normalizeLevelData({
+      ...base,
+      checkpoints: [
+        { position: { x: 4, y: 0 }, size: { x: 1, y: 2 }, label: 'flag' },
+        { position: { x: 'a', y: 0 }, size: { x: 1, y: 1 } },
+        { size: { x: 1, y: 1 } },
+        7,
+      ],
+    });
+    expect(coreLevel.checkpoints).toEqual([{ position: { x: 4, y: 0 }, size: { x: 1, y: 2 } }]);
+  });
+
+  it('leaves the key off when there are none', () => {
+    expect(normalizeLevelData(base).coreLevel).not.toHaveProperty('checkpoints');
+    expect(normalizeLevelData({ ...base, checkpoints: 'x' }).coreLevel).not.toHaveProperty('checkpoints');
+  });
+});
+
 describe('normalizeLevelData — courier entities', () => {
   it('passes hazards, payload and terminals through to the core level', () => {
     const { coreLevel } = normalizeLevelData({

@@ -60,6 +60,8 @@ export type CoreLevel = {
   camera?: { followY?: boolean; verticalDeadzone?: number; lookAheadY?: number };
   platforms: Platform[];
   goals?: Platform[];
+  /** Triggers (same centre-and-size boxes as goals): entering one makes its centre the respawn point. */
+  checkpoints?: Platform[];
   hazards?: CoreHazard[];
   /** Present: the goals only complete while it is carried. */
   payload?: Platform;
@@ -319,6 +321,8 @@ export const normalizeLevelData = (level: unknown): LevelData => {
 
   const goals = parsePlatformArray(level.goals);
   if (goals.length > 0) coreLevel.goals = goals;
+  const checkpoints = parsePlatformArray(level.checkpoints);
+  if (checkpoints.length > 0) coreLevel.checkpoints = checkpoints;
   const hazards = parseHazards(level.hazards);
   if (hazards.length > 0) coreLevel.hazards = hazards;
   const payload = parseBox(level.payload);

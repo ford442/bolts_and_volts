@@ -21,6 +21,10 @@ public:
     void setSoundCallback(emscripten::val callback);
     void loadLevel(const emscripten::val& level);
     void setLevelCompleteCallback(emscripten::val callback);
+    // Called with the checkpoint's index each time the player enters one (see SimEventType::CheckpointReached).
+    void setCheckpointCallback(emscripten::val callback);
+    // Re-apply a saved checkpoint after loadLevel (which always resets to the spawn). False: no such checkpoint.
+    bool restoreCheckpoint(int index);
     Vec2 getPlayerPosition() const;
     Vec2 getPlayerSize() const;
     Vec2 getCameraPosition() const;
@@ -50,6 +54,7 @@ private:
     std::vector<SimEvent> pendingEvents;  // reused by dispatchEvents
     emscripten::val soundCallback = emscripten::val::null();
     emscripten::val levelCompleteCallback = emscripten::val::null();
+    emscripten::val checkpointCallback = emscripten::val::null();
     std::string levelName = "test-1";
     std::string levelDescription;
     std::vector<float> frameBuffer;

@@ -15,15 +15,17 @@ enum class SimEventType {
     Running,           // one grounded tick with horizontal speed
     CharacterSwitched,
     GoalReached,       // first overlap with a goal (while carrying the payload, if the level has one); once per goal per level load
-    Respawned,         // touched an enabled hazard; position is where, the player is already back at spawn
+    Respawned,         // touched an enabled hazard; position is where, the player is already back at the respawn point
     PayloadPickedUp,   // first overlap with the payload since it was last on its pad
     TerminalUsed,      // Volts used a terminal (its target hazard, if any, is now disabled)
+    CheckpointReached, // entered a checkpoint it was not already inside; `index` says which, and it is now the respawn point
 };
 
 struct SimEvent {
     SimEventType type;
     Vec2 position;  // player centre when the event happened
     Vec2 velocity;  // player velocity when the event happened
+    int index = -1; // CheckpointReached: the checkpoint's index in the level; -1 for every other event
 };
 
 #endif // SIM_EVENT_HPP
