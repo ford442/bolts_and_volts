@@ -43,7 +43,7 @@ npm run test:sim          # native C++ simulation tests (host g++/clang++; no em
 npm run preview
 ```
 
-**Prerequisite:** Emscripten (`emcc`) must be on `PATH` for any command that compiles WASM. The `build:wasm` script outputs `src/wasm/main.js` + `main.wasm`. The Playwright smoke test does not require `emcc` because it stubs the WASM module. `npm run test:sim` needs only a host C++17 compiler (`scripts/test-sim.sh`, output in `build/native/`).
+**Prerequisite:** Emscripten (`em++`, from emsdk 6.0.13) must be on `PATH` for any command that compiles WASM. The `build:wasm` script outputs `src/wasm/main.js` + `main.wasm`. The Playwright smoke test does not require `emcc` because it stubs the WASM module. `npm run test:sim` needs only a host C++17 compiler (`scripts/test-sim.sh`, output in `build/native/`).
 
 ## Architecture
 
@@ -121,6 +121,6 @@ World units are used throughout (not pixels). The viewport shows 10 world-units 
 
 ## Known Issues / Blockers (2026-09-07)
 
-- **CI added (2026-11-19).** `.github/workflows/ci.yml` runs native sim tests (`npm run test:sim`, before emsdk is installed), release WASM build, lint, `tsc -b`, unit and e2e tests on push/PR to `main` (emsdk pinned to 3.1.61). Not yet confirmed green on GitHub — check the first PR run. emcc flags live in `cpp/emscripten-*.response` (see `cpp/README.md`).
+- **CI added (2026-11-19).** `.github/workflows/ci.yml` runs native sim tests (`npm run test:sim`, before emsdk is installed), release WASM build, lint, `tsc -b`, unit and e2e tests on push/PR to `main` (emsdk pinned to 6.0.13). Not yet confirmed green on GitHub — check the first PR run. em++ flags live in `cpp/emscripten-*.response` (see `cpp/README.md`).
 - **This file had drifted.** As of this audit it hadn't been updated in ~78 days despite ongoing commits, and `AGENTS.md`'s "Known Issues" list had three already-fixed items still listed as open (a `Game.cpp` compile error, a duplicate `App.tsx`, a hardcoded SFTP credential in `deploy.py` — all fixed). Fixed here and in `AGENTS.md`; worth rechecking both periodically against the actual code.
 - **`decor` / `backgroundLayers` level fields aren't documented above.** `public/levels/demo-decor.json` (listed in `public/levels/manifest.json`, selectable in the level dropdown) uses `"decor"` and `"backgroundLayers"` arrays, fully handled client-side by `extractDecorConfigs` / `extractBackgroundLayerConfigs` in `src/lib/levelData.ts` and drawn by `drawBackgroundLayer` in `src/gl/renderer.ts` — but the "Level format" section above only documents `spawn`/`bounds`/`platforms`/`goals`/`camera`. These fields never reach `Game::loadLevel` in C++; they're TS-only. `docs/plans/PLAN.md` §1 lists documenting this schema as a not-started roadmap item.

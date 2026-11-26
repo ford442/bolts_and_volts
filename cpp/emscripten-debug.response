@@ -2,3 +2,4 @@
 -g
 -gsource-map
 -sASSERTIONS=2
+-sSTACK_OVERFLOW_CHECK=2

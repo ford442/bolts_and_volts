@@ -97,7 +97,7 @@ The smoke test can run without an Emscripten build because it stubs the WASM mod
 
 ## Building the WASM module
 
-Compiling C++ requires the [Emscripten SDK](https://emscripten.org/docs/getting_started/downloads.html) (`emcc`). CI pins emsdk 3.1.61. `emcc` must be on `PATH`, or set `EMSDK_PATH` to your emsdk checkout (default `/root/emsdk`) and `scripts/with-emsdk.sh` will source it.
+Compiling C++ requires the [Emscripten SDK](https://emscripten.org/docs/getting_started/downloads.html) (`emcc`). CI and `cpp/README.md` pin emsdk 6.0.13; the build runs `em++`. `emcc` must be on `PATH`, or set `EMSDK_PATH` to your emsdk checkout (default `/root/emsdk`) and `scripts/with-emsdk.sh` will source it.
 
 | Script | Flags | Used by |
 | --- | --- | --- |
