@@ -28,8 +28,8 @@
 
 ## 4) Performance & Scale
 
-- ~~Add visible-rect culling across platforms/decor/particles.~~ Done (render-only; `K` debug view). Spatial partitioning / physics broadphase is still open.
-- Introduce lightweight spatial partitioning for very large maps.
+- ~~Add visible-rect culling across platforms/decor/particles.~~ Done (render-only; `K` debug view).
+- ~~Physics broadphase for very large maps.~~ Done: a uniform grid over static platforms (`cpp/src/sim/PlatformGrid`), built at level load, resolving in the same order as the old linear scan. Platforms and goals no longer cross the wasm boundary per frame (uploaded once with `loadLevel`). Open: moving platforms (a separate short list, not in the grid).
 - Profile rendering costs for large generated background art.
 
 ## 5) Deployment & Release Hygiene

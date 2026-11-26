@@ -17,7 +17,7 @@ import {
 import { formatCullStats } from '../lib/culling';
 import { observeCanvasSize, type CanvasSize } from '../lib/canvasSize';
 import { reportLevelIssues, summarizeLevelIssues, validateLevel, type LevelIssueSummary } from '../lib/levelValidator';
-import { DEFAULT_BACKGROUND_LAYER, isRecord, normalizeLevelData } from '../lib/levelData';
+import { DEFAULT_BACKGROUND_LAYER, DEFAULT_PLATFORMS, isRecord, normalizeLevelData } from '../lib/levelData';
 import { EMPTY_DECOR_LAYERS, createLevelAssetLoader } from '../game/levelAssets';
 import { KeyboardInput } from '../game/input';
 import { startGameLoop, type SceneAssets } from '../game/loop';
@@ -211,18 +211,20 @@ const GameCanvas = () => {
           renderer.loadTexture(WAZZY_SPRITESHEET_URL),
           renderer.loadTexture(PLATFORM_TEXTURE_URL),
         ]);
+        // Geometry starts as the level a new Game holds (Game.cpp defaultLevel) and changes only with loadLevel.
         const assets: SceneAssets = {
           playerTexture,
           platformTexture,
           backgroundLayers: [],
           decorLayers: EMPTY_DECOR_LAYERS,
+          platforms: [...DEFAULT_PLATFORMS],
           platformVisualFlags: [],
+          goals: [],
         };
         const { loadBackgroundLayers, loadDecorLayers } = createLevelAssetLoader(renderer, () => `[level ${currentLevelIdRef.current}]`);
-        const setLevelAssets = (backgroundLayers: BackgroundLayer[], decorLayers: DecorLayers, platformVisualFlags: boolean[]) => {
+        const setLevelAssets = (backgroundLayers: BackgroundLayer[], decorLayers: DecorLayers) => {
           assets.backgroundLayers = backgroundLayers;
           assets.decorLayers = decorLayers;
-          assets.platformVisualFlags = platformVisualFlags;
         };
 
         const loadManifest = async (): Promise<void> => {
@@ -271,11 +273,15 @@ const GameCanvas = () => {
               reportLevelIssues(levelLabel, issues);
               setLevelIssues(issues.length > 0 ? summarizeLevelIssues(levelLabel, issues) : null);
               const normalized = normalizeLevelData(levelObj);
-              game.loadLevel(normalized.coreLevel);
+              const { coreLevel } = normalized;
+              game.loadLevel(coreLevel);
+              // Same tick as loadLevel: the snapshot no longer carries geometry, so these are what gets drawn.
+              assets.platforms = coreLevel.platforms;
+              assets.platformVisualFlags = normalized.platformVisualFlags;
+              assets.goals = coreLevel.goals ?? [];
               setLevelAssets(
                 await loadBackgroundLayers(normalized.backgroundLayers),
                 await loadDecorLayers(normalized.decor),
-                normalized.platformVisualFlags,
               );
               setCurrentLevelMetadata({
                 id: targetLevel.id,
@@ -284,13 +290,14 @@ const GameCanvas = () => {
                 author: isRecord(levelObj) && typeof levelObj.author === 'string' ? levelObj.author : (targetLevel.author ?? ''),
               });
             } else {
+              // No loadLevel: the game keeps its previous level, and assets keep its geometry.
               reportLoadFailure(`Failed to fetch ${levelUrl}: HTTP ${levelResp.status}. Loading default background and no level data.`);
-              setLevelAssets(await loadBackgroundLayers([DEFAULT_BACKGROUND_LAYER]), EMPTY_DECOR_LAYERS, []);
+              setLevelAssets(await loadBackgroundLayers([DEFAULT_BACKGROUND_LAYER]), EMPTY_DECOR_LAYERS);
               setCurrentLevelMetadata(manifestMetadata);
             }
           } catch (err) {
             reportLoadFailure('Error loading level (invalid JSON syntax, or a background texture failed to load). Falling back to the default background.', err);
-            setLevelAssets(await loadBackgroundLayers([DEFAULT_BACKGROUND_LAYER]), EMPTY_DECOR_LAYERS, []);
+            setLevelAssets(await loadBackgroundLayers([DEFAULT_BACKGROUND_LAYER]), EMPTY_DECOR_LAYERS);
             setCurrentLevelMetadata(manifestMetadata);
           }
         };

@@ -2,7 +2,9 @@ import type { Vec2 } from '../wasm/loader';
 
 /**
  * Float layout of the per-frame snapshot written by `Game::captureFrame()`.
- * Mirrors `FrameLayout` in cpp/src/Types.hpp — change both together.
+ * Mirrors `FrameLayout` in cpp/src/Types.hpp — change both together. Only what moves or changes state is in it:
+ * platforms and goals are static for the life of a `loadLevel`, so the loop draws the arrays it passed in
+ * (`SceneAssets` in loop.ts). Header slots 12-13 (the old platform and goal counts) and 18-19 are reserved.
  */
 export const FRAME = {
   PLAYER_X: 0,
@@ -17,16 +19,12 @@ export const FRAME = {
   CHARACTER: 9,
   ABILITY_STATE: 10,
   ABILITY_COOLDOWN: 11,
-  PLATFORM_COUNT: 12,
-  GOAL_COUNT: 13,
   PARTICLE_COUNT: 14,
   HAZARD_COUNT: 15,
   /** 0 or 1. */
   PAYLOAD_COUNT: 16,
   TERMINAL_COUNT: 17,
   HEADER_SIZE: 20,
-  /** Platforms and goals: x, y, w, h. */
-  BOX_STRIDE: 4,
   /** Hazards, payload, terminals: x, y, w, h, flag. */
   ENTITY_STRIDE: 5,
   PARTICLE_STRIDE: 4,
@@ -71,8 +69,6 @@ export interface FrameState {
   character: number;
   abilityState: number;
   abilityCooldown: number;
-  platforms: Box[];
-  goals: Box[];
   /** `flag`: enabled (a disabled hazard is harmless). */
   hazards: FlagBox[];
   /** Zero or one entry. `flag`: carried. */
@@ -89,27 +85,11 @@ export const createFrameState = (): FrameState => ({
   character: 0,
   abilityState: AbilityState.Ready,
   abilityCooldown: 0,
-  platforms: [],
-  goals: [],
   hazards: [],
   payloads: [],
   terminals: [],
   particles: [],
 });
-
-const readBoxes = (data: Float32Array, offset: number, count: number, out: Box[]): number => {
-  for (let i = 0; i < count; i++) {
-    const o = offset + i * FRAME.BOX_STRIDE;
-    let box = out[i];
-    if (!box) out[i] = box = { position: { x: 0, y: 0 }, size: { x: 0, y: 0 } };
-    box.position.x = data[o];
-    box.position.y = data[o + 1];
-    box.size.x = data[o + 2];
-    box.size.y = data[o + 3];
-  }
-  out.length = count;
-  return offset + count * FRAME.BOX_STRIDE;
-};
 
 const readFlagBoxes = (data: Float32Array, offset: number, count: number, out: FlagBox[]): number => {
   for (let i = 0; i < count; i++) {
@@ -132,14 +112,11 @@ const readFlagBoxes = (data: Float32Array, offset: number, count: number, out: F
  */
 export const readFrame = (data: Float32Array, out: FrameState): FrameState => {
   if (data.length < FRAME.HEADER_SIZE) throw new Error(`frame snapshot too short: ${data.length} floats`);
-  const platformCount = data[FRAME.PLATFORM_COUNT];
-  const goalCount = data[FRAME.GOAL_COUNT];
   const particleCount = data[FRAME.PARTICLE_COUNT];
   const hazardCount = data[FRAME.HAZARD_COUNT];
   const payloadCount = data[FRAME.PAYLOAD_COUNT];
   const terminalCount = data[FRAME.TERMINAL_COUNT];
   const expected = FRAME.HEADER_SIZE
-    + (platformCount + goalCount) * FRAME.BOX_STRIDE
     + (hazardCount + payloadCount + terminalCount) * FRAME.ENTITY_STRIDE
     + particleCount * FRAME.PARTICLE_STRIDE;
   if (data.length < expected) throw new Error(`frame snapshot truncated: ${data.length} < ${expected} floats`);
@@ -158,8 +135,6 @@ export const readFrame = (data: Float32Array, out: FrameState): FrameState => {
   out.abilityCooldown = data[FRAME.ABILITY_COOLDOWN];
 
   let offset: number = FRAME.HEADER_SIZE;
-  offset = readBoxes(data, offset, platformCount, out.platforms);
-  offset = readBoxes(data, offset, goalCount, out.goals);
   offset = readFlagBoxes(data, offset, hazardCount, out.hazards);
   offset = readFlagBoxes(data, offset, payloadCount, out.payloads);
   offset = readFlagBoxes(data, offset, terminalCount, out.terminals);

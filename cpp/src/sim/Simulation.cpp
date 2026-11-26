@@ -36,6 +36,7 @@ float cooldownFor(CharacterType character) {
 
 void Simulation::loadLevel(const LevelSpec& level) {
     platforms_ = level.platforms;
+    platformGrid_.build(platforms_);
     goals_ = level.goals;
     goalReached_.assign(goals_.size(), false);
     bounds_ = level.bounds;
@@ -283,13 +284,35 @@ void Simulation::moveVertical(float dt) {
     }
 }
 
+// Call `push(platform)` for every platform the body overlaps, in ascending index order, exactly as a walk over
+// platforms_ would: each push moves the body, and later platforms are tested against the moved box. The grid only
+// narrows the walk. After a push the old candidates may miss platforms the moved box now reaches, so query again
+// and carry on past the index that pushed. Returns whether anything was hit.
+template <typename Push>
+bool Simulation::resolvePlatforms(Push push) {
+    bool hit = false;
+    int tested = -1;  // every platform up to this index has had its turn
+    for (bool requery = true; requery;) {
+        requery = false;
+        platformGrid_.query(player_.position, player_.size, candidates_);
+        for (const int index : candidates_) {
+            if (index <= tested) continue;
+            tested = index;
+            const Platform& platform = platforms_[static_cast<std::size_t>(index)];
+            if (!boxesOverlap(player_.position, player_.size, platform.position, platform.size, CONTACT_EPSILON)) continue;
+            hit = true;
+            push(platform);
+            requery = true;
+            break;
+        }
+    }
+    return hit;
+}
+
 // Push the body out of every platform it overlaps, along Y, back towards the side its centre is on. Landing on a
 // top sets grounded. Returns whether anything was hit.
 bool Simulation::resolveVertical() {
-    bool hit = false;
-    for (const Platform& platform : platforms_) {
-        if (!boxesOverlap(player_.position, player_.size, platform.position, platform.size, CONTACT_EPSILON)) continue;
-        hit = true;
+    return resolvePlatforms([this](const Platform& platform) {
         const float reach = (player_.size.y + platform.size.y) * 0.5f;
         if (player_.position.y > platform.position.y) {
             player_.position.y = platform.position.y + reach;
@@ -301,8 +324,7 @@ bool Simulation::resolveVertical() {
             player_.position.y = platform.position.y - reach;
             if (player_.velocity.y > 0.0f) player_.velocity.y = 0.0f;
         }
-    }
-    return hit;
+    });
 }
 
 // resolveVertical pushes towards the side of the platform's centre line the body's centre is on. Starting clear
@@ -318,14 +340,13 @@ int Simulation::verticalSubsteps(float move) const {
 
 void Simulation::moveHorizontal(float dt) {
     player_.position.x += player_.velocity.x * dt;
-    for (const Platform& platform : platforms_) {
-        if (!boxesOverlap(player_.position, player_.size, platform.position, platform.size, CONTACT_EPSILON)) continue;
+    resolvePlatforms([this](const Platform& platform) {
         const float reach = (player_.size.x + platform.size.x) * 0.5f;
         player_.position.x = (player_.position.x > platform.position.x)
             ? platform.position.x + reach
             : platform.position.x - reach;
         player_.velocity.x = 0.0f;
-    }
+    });
 }
 
 void Simulation::updateGroundState(bool wasGrounded, float dt) {

@@ -256,16 +256,23 @@ export const extractDecorConfigs = (level: unknown): DecorConfig[] => {
   return parsed;
 };
 
+/**
+ * The platforms of `defaultLevel()` in cpp/src/Game.cpp, which a new `Game` holds until the first `loadLevel`, and
+ * the fallback for a level with no valid platforms. Keep the two lists the same: the renderer draws this one while
+ * the simulation collides with that one.
+ */
+export const DEFAULT_PLATFORMS: readonly Platform[] = [
+  { position: { x: -12.25, y: -2.0 }, size: { x: 110.0, y: 0.2 } },
+  { position: { x: 0.0, y: -0.8 }, size: { x: 2.0, y: 0.2 } },
+  { position: { x: 2.0, y: -0.6 }, size: { x: 1.0, y: 0.2 } },
+  { position: { x: 4.0, y: -0.4 }, size: { x: 1.0, y: 0.2 } },
+  { position: { x: 6.0, y: -0.2 }, size: { x: 1.5, y: 0.2 } },
+  { position: { x: 8.0, y: 0.2 }, size: { x: 1.0, y: 0.2 } },
+  { position: { x: 10.0, y: 0.6 }, size: { x: 1.0, y: 0.2 } },
+];
+
 export const normalizeLevelData = (level: unknown): LevelData => {
-  const fallbackPlatforms = [
-    { position: { x: -12.25, y: -2.0 }, size: { x: 110.0, y: 0.2 } },
-    { position: { x: 0.0, y: -0.8 }, size: { x: 2.0, y: 0.2 } },
-    { position: { x: 2.0, y: -0.6 }, size: { x: 1.0, y: 0.2 } },
-    { position: { x: 4.0, y: -0.4 }, size: { x: 1.0, y: 0.2 } },
-    { position: { x: 6.0, y: -0.2 }, size: { x: 1.5, y: 0.2 } },
-    { position: { x: 8.0, y: 0.2 }, size: { x: 1.0, y: 0.2 } },
-    { position: { x: 10.0, y: 0.6 }, size: { x: 1.0, y: 0.2 } },
-  ];
+  const fallbackPlatforms = DEFAULT_PLATFORMS.map((p) => ({ position: { ...p.position }, size: { ...p.size } }));
 
   if (!isRecord(level)) {
     return {

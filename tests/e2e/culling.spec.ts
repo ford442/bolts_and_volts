@@ -1,7 +1,8 @@
 import { expect, test } from '@playwright/test';
 import { routeWasmStub, type StubScene } from './wasmStub';
 
-// Stubbed WASM: camera at the origin, one platform in view and two far outside it.
+// Stubbed WASM: camera at the origin, one platform in view and two far outside it. The snapshot carries no
+// geometry: the three platforms reach the renderer from the (stubbed) level JSON passed to loadLevel.
 const SCENE: StubScene = {
   levelName: 'Cull Test Level',
   platforms: [

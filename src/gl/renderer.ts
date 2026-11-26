@@ -606,8 +606,9 @@ export class Renderer {
     const view = this.view;
     this.gl.uniform2f(this.spriteCameraPositionUniformLocation, cameraPosition.x, cameraPosition.y);
 
-    // Render-only visible-rect culling: physics keeps using every platform. In cull-debug mode the
-    // rect is shrunk inside the screen so items visibly drop out before reaching the edge.
+    // Render-only visible-rect culling: physics never sees this rect (its broadphase is a grid over the whole level,
+    // cpp/src/sim/PlatformGrid). In cull-debug mode the rect is shrunk inside the screen so items visibly drop out
+    // before reaching the edge.
     const cullInset = cullDebug ? CULL_DEBUG_INSET : 0;
     let cullRect: Rect = visibleRect(cameraPosition, { x: view.worldWidth, y: view.worldHeight });
     if (cullInset > 0) cullRect = insetRect(cullRect, cullInset);

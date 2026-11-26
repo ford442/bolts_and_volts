@@ -24,7 +24,7 @@ mkdir -p "$OUT_DIR"
 # -ffp-contract=off: no fused multiply-add (wasm has none), so the native float math matches the browser build.
 "$CXX" -std=c++17 -O1 -g -Wall -Wextra -Werror -ffp-contract=off \
   -Icpp/src -Itests/native/third_party \
-  tests/native/sim_tests.cpp cpp/src/sim/Simulation.cpp \
+  tests/native/sim_tests.cpp cpp/src/sim/Simulation.cpp cpp/src/sim/PlatformGrid.cpp \
   -o "$OUT_DIR/sim_tests"
 
 exec "$OUT_DIR/sim_tests" "$@"

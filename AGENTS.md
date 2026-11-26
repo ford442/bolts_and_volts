@@ -129,7 +129,7 @@ npm run preview       # vite preview
 - Value objects: `Vec2`, `InputState`
 - Class: `Game` with methods `update`, `handleInput`, `captureFrame`, `framePtr`, `getPlayerPosition`, `getCameraPosition`, `getPlayerSize`, `getLevelName`, `getLevelDescription`, `setSoundCallback`, `loadLevel`, `setLevelCompleteCallback`, plus the character/ability methods
 
-Per-frame render state crosses as one float buffer, not embind objects: `captureFrame()` packs it (layout `FrameLayout` in `Types.hpp`, mirrored by `FRAME` in `src/game/snapshot.ts`) and returns its length; JS views it at `framePtr()` through `module.HEAPF32`, re-wrapping every frame. Animation state is a `PlayerState` int; the renderer maps it to a spritesheet row.
+Per-frame render state crosses as one float buffer, not embind objects: `captureFrame()` packs it (layout `FrameLayout` in `Types.hpp`, mirrored by `FRAME` in `src/game/snapshot.ts`) and returns its length; JS views it at `framePtr()` through `module.HEAPF32`, re-wrapping every frame. Only what moves or changes state is in it: platforms and goals cross once, in `loadLevel`, and the loop draws the arrays it passed in (`SceneAssets` in `src/game/loop.ts`). Animation state is a `PlayerState` int; the renderer maps it to a spritesheet row.
 
 The Emscripten build produces an ES module (`src/wasm/main.js`) with `EXPORT_ES6=1`, `MODULARIZE=1` and `EXPORT_NAME=createWasmModule`; `src/wasm/loader.ts` dynamic-imports it.
 
