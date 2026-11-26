@@ -28,6 +28,8 @@ EMSCRIPTEN_BINDINGS(WASM_Venture) {
         .function("setSoundCallback", &Game::setSoundCallback)
         .function("loadLevel", &Game::loadLevel)
         .function("setLevelCompleteCallback", &Game::setLevelCompleteCallback)
+        .function("setCheckpointCallback", &Game::setCheckpointCallback)
+        .function("restoreCheckpoint", &Game::restoreCheckpoint)
         // Bolts & Volts two-character system
         .function("switchCharacter", &Game::switchCharacter)
         .function("getCurrentCharacter", &Game::getCurrentCharacter)

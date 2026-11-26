@@ -36,6 +36,12 @@ describe('advanceAccumulator', () => {
     expect(advanceAccumulator(0.01, -1)).toEqual({ steps: 0, accumulator: 0.01 });
   });
 
+  it('runs no ticks while paused, banks none of the time, and keeps the leftover from before', () => {
+    expect(advanceAccumulator(0.005, 5, true)).toEqual({ steps: 0, accumulator: 0.005 });
+    // Resuming does not replay the paused time: the first frame back is a normal one.
+    expect(advanceAccumulator(0.005, 1000 / 60 / 1000, false).steps).toBe(1);
+  });
+
   it('keeps the leftover below one tick', () => {
     const r = advanceAccumulator(0, FIXED_STEP * 2.5);
     expect(r.steps).toBe(2);
@@ -87,7 +93,7 @@ describe('startGameLoop and WebGL context loss', () => {
   };
   afterEach(() => vi.unstubAllGlobals());
 
-  const setup = () => {
+  const setup = (extra: Partial<GameLoopOptions> = {}) => {
     installRaf();
     let lost = false;
     const listeners = new Set<(status: ContextStatus) => void>();
@@ -107,6 +113,7 @@ describe('startGameLoop and WebGL context loss', () => {
       renderer: renderer as unknown as LoopRenderer,
       input: { snapshot: () => ({}) },
       assets: { playerTexture: texture, platformTexture: texture, backgroundLayers: [], decorLayers: { distant: [], mid: [], foreground: [] }, platforms: [], platformVisualFlags: [], goals: [] },
+      ...extra,
     } as unknown as GameLoopOptions;
     const stop = startGameLoop(options);
     return { renderer, game, emit, stop, listeners };
@@ -137,6 +144,41 @@ describe('startGameLoop and WebGL context loss', () => {
     expect(listeners.size).toBe(0);
     emit('restored'); // a restore after stop must not restart the loop
     expect(pending).toBeNull();
+  });
+
+  it('a paused frame runs zero updates and zero input steps, still draws, and resuming does not replay the gap', () => {
+    let paused = false;
+    const { renderer, game, stop } = setup({ paused: () => paused });
+    const inputs = { count: 0 };
+    game.handleInput = () => { inputs.count++; };
+    frame(0);
+    frame(1000 / 60);
+    expect(game.updates).toBe(1);
+    expect(inputs.count).toBe(1);
+
+    paused = true;
+    frame(2000 / 60);
+    frame(10_000);   // a long pause
+    frame(20_000);
+    expect(game.updates).toBe(1);
+    expect(inputs.count).toBe(1);
+    expect(renderer.draws).toBe(5);  // the last snapshot is still drawn every frame
+
+    paused = false;
+    frame(20_000 + 1000 / 60);  // the first frame back: one tick, not a catch-up burst
+    expect(game.updates).toBe(2);
+    stop();
+  });
+
+  it('stops ticking mid-frame when a tick pauses the game (level complete)', () => {
+    let paused = false;
+    const { game, stop } = setup({ paused: () => paused });
+    const update = game.update.bind(game);
+    game.update = () => { update(); paused = true; };  // e.g. the level-complete callback
+    frame(0);
+    frame(4000 / 60);  // four ticks are due
+    expect(game.updates).toBe(1);
+    stop();
   });
 
   it('a frame already scheduled when the context is lost does not draw', () => {

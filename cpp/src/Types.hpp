@@ -8,7 +8,7 @@ struct Vec2 { float x; float y; };
 
 struct Platform { Vec2 position; Vec2 size; };
 
-// Overlap respawns the player at the level spawn. With speed > 0 it patrols x in [x0, x1] at a constant speed
+// Overlap respawns the player at the respawn point (the level spawn, or the latest checkpoint). With speed > 0 it patrols x in [x0, x1] at a constant speed
 // (`direction` is +1 or -1); speed 0 is a static hazard (x0 == x1 == position.x). Disabled by a terminal.
 struct Hazard {
     Vec2 position;

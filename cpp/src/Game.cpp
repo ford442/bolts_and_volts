@@ -108,6 +108,16 @@ void Game::setLevelCompleteCallback(val callback) {
     levelCompleteCallback = callback;
 }
 
+void Game::setCheckpointCallback(val callback) {
+    checkpointCallback = callback;
+}
+
+bool Game::restoreCheckpoint(int index) {
+    const bool restored = sim.restoreCheckpoint(index);
+    dispatchEvents();
+    return restored;
+}
+
 void Game::playSound(const std::string& soundName) {
     if (!soundCallback.isNull()) {
         soundCallback(soundName);
@@ -122,6 +132,7 @@ void Game::loadLevel(const val& level) {
     if (hasField(level, "spawn") && readVec2(level["spawn"], spawn)) spec.spawn = spawn;
     if (hasField(level, "platforms")) readBoxes(level["platforms"], spec.platforms);
     if (hasField(level, "goals")) readBoxes(level["goals"], spec.goals);
+    if (hasField(level, "checkpoints")) readBoxes(level["checkpoints"], spec.checkpoints);
     if (hasField(level, "hazards")) readHazards(level["hazards"], spec.hazards);
     if (hasField(level, "terminals")) readTerminals(level["terminals"], spec.terminals);
     if (hasField(level, "payload")) {
@@ -190,6 +201,9 @@ void Game::dispatchEvents() {
             case SimEventType::CharacterSwitched: playSound("switch"); break;
             case SimEventType::GoalReached:
                 if (!levelCompleteCallback.isNull()) levelCompleteCallback();
+                break;
+            case SimEventType::CheckpointReached:
+                if (!checkpointCallback.isNull()) checkpointCallback(event.index);
                 break;
             case SimEventType::PoundImpact:
             case SimEventType::HoverTick:

@@ -29,11 +29,12 @@ const isRecord = (value: unknown): value is JsonRecord =>
 const isFiniteNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 
 const TOP_LEVEL_KEYS = [
-  'name', 'description', 'author', 'spawn', 'bounds', 'camera', 'platforms', 'goals',
+  'name', 'description', 'author', 'spawn', 'bounds', 'camera', 'platforms', 'goals', 'checkpoints',
   'hazards', 'payload', 'terminals', 'backgroundLayers', 'decor',
 ];
 const PLATFORM_KEYS = ['position', 'size', 'visual', 'label'];
 const GOAL_KEYS = ['position', 'size', 'label'];
+const CHECKPOINT_KEYS = ['position', 'size', 'label'];
 const CAMERA_KEYS = ['followY', 'verticalDeadzone', 'lookAheadY'];
 const HAZARD_KEYS = ['position', 'size', 'patrol', 'label'];
 const PATROL_KEYS = ['x0', 'x1', 'speed'];
@@ -278,6 +279,27 @@ export const validateLevel = (level: unknown): LevelIssue[] => {
         add('warning', `${path}.position`, 'a point inside bounds', `(${position.x}, ${position.y}) outside bounds`, 'goal may be unreachable by the camera');
       }
     });
+  }
+
+  // --- checkpoints (optional) ---
+  if (level.checkpoints !== undefined) {
+    if (!Array.isArray(level.checkpoints)) {
+      add('error', 'checkpoints', 'array of { position, size }', level.checkpoints, 'checkpoints ignored');
+    } else {
+      level.checkpoints.forEach((item: unknown, index: number) => {
+        const path = `checkpoints[${index}]`;
+        if (!isRecord(item)) {
+          add('error', path, 'object { position, size }', item, 'entry skipped');
+          return;
+        }
+        checkUnknownKeys(path, item, CHECKPOINT_KEYS);
+        checkVec2(`${path}.position`, item.position, 'error', 'entry skipped');
+        const size = checkVec2(`${path}.size`, item.size, 'error', 'entry skipped');
+        if (size && (size.x <= 0 || size.y <= 0)) {
+          add('warning', `${path}.size`, 'width and height > 0', `(${size.x}, ${size.y})`, 'checkpoint has no area to touch');
+        }
+      });
+    }
   }
 
   // --- hazards (optional) ---

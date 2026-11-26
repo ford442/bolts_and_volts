@@ -21,6 +21,21 @@ import { DEFAULT_BACKGROUND_LAYER, DEFAULT_PLATFORMS, isRecord, normalizeLevelDa
 import { EMPTY_DECOR_LAYERS, createLevelAssetLoader } from '../game/levelAssets';
 import { KeyboardInput } from '../game/input';
 import { startGameLoop, type SceneAssets } from '../game/loop';
+import {
+  browserStorage,
+  clearProgress,
+  completedCount,
+  createPauseControl,
+  emptyProgress,
+  loadProgress,
+  resolveNextLevel,
+  saveProgress,
+  startingLevel,
+  withCheckpoint,
+  withCompleted,
+  type Progress,
+  type SessionPhase,
+} from '../game/session';
 import type { FrameState } from '../game/snapshot';
 import { createAbilityHudWriter } from '../game/abilityHud';
 import AbilityHud from './AbilityHud';
@@ -67,9 +82,17 @@ const GameCanvas = () => {
   const cullInfoRef = useRef<HTMLDivElement>(null);
   const audioManagerRef = useRef<AudioManager | null>(null);
   const gameInstanceRef = useRef<Game | null>(null);
-  const reloadLevelRef = useRef<((targetLevelId?: string, cacheBust?: boolean) => Promise<void>) | null>(null);
+  // `restart`: begin the level from its spawn, forgetting any saved checkpoint (R, Reload, Reset progress).
+  const reloadLevelRef = useRef<((targetLevelId?: string, cacheBust?: boolean, restart?: boolean) => Promise<void>) | null>(null);
   const levelsRef = useRef<LevelManifestEntry[]>(DEFAULT_LEVELS);
   const currentLevelIdRef = useRef<string>(DEFAULT_LEVELS[0].id);
+  // The level the simulation actually holds: set right after `game.loadLevel`, so a goal or checkpoint is credited to it
+  // even while another level's fetch is still in flight (currentLevelIdRef moves as soon as a load starts).
+  const simLevelIdRef = useRef<string>(DEFAULT_LEVELS[0].id);
+  // Campaign rules live in src/game/session.ts; these refs are what the loop and handlers read. The pause flag is never
+  // React state per frame: `phase` below only mirrors it for the overlays, on the rare transitions.
+  const pauseRef = useRef(createPauseControl());
+  const progressRef = useRef<Progress>(emptyProgress());
   // Level-authoring aids (G grid, Shift+G grid step, H authoring mode, P copy platform JSON).
   // The ref is what the key handler and game loop read; the state mirrors it for the React HUD.
   const authoringRef = useRef<AuthoringState>(INITIAL_AUTHORING_STATE);
@@ -82,7 +105,8 @@ const GameCanvas = () => {
   const [cullDebug, setCullDebug] = useState(false);
   const [copyNote, setCopyNote] = useState('');
   const [volume, setVolume] = useState(INITIAL_VOLUME);
-  const [levelComplete, setLevelComplete] = useState(false);
+  const [phase, setPhase] = useState<SessionPhase>('playing');
+  const [finishedCount, setFinishedCount] = useState(0);
   const [availableLevels, setAvailableLevels] = useState<LevelManifestEntry[]>(DEFAULT_LEVELS);
   const [currentLevelId, setCurrentLevelId] = useState<string>(DEFAULT_LEVELS[0].id);
   const [levelIssues, setLevelIssues] = useState<LevelIssueSummary | null>(null);
@@ -105,11 +129,12 @@ const GameCanvas = () => {
 
       // R key: reload current level JSON (great for iterating on map design)
       if (e.code === 'KeyR') {
-        void reloadLevelRef.current?.(currentLevelIdRef.current, true);
+        void reloadLevelRef.current?.(currentLevelIdRef.current, true, true);
       }
 
-      // C key: switch between Bolts and Volts (the HUD picks the new character up from the next snapshot)
-      if (e.code === 'KeyC') {
+      // C key: switch between Bolts and Volts (the HUD picks the new character up from the next snapshot). Not while
+      // paused: it acts on the simulation directly rather than through the (stopped) input step.
+      if (e.code === 'KeyC' && !pauseRef.current.isPaused()) {
         gameInstanceRef.current?.switchCharacter();
       }
 
@@ -117,6 +142,11 @@ const GameCanvas = () => {
       // control has focus, so they can't fight the level dropdown, browser shortcuts or existing keys.
       const target = e.target as HTMLElement | null;
       const inFormControl = target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement;
+      // Escape: pause / resume (on the complete screen only a level load ends the pause). Leaves a focused select alone,
+      // where Escape closes its list.
+      if (e.code === 'Escape' && !e.repeat && !inFormControl) {
+        setPhase(pauseRef.current.toggle());
+      }
       if (!inFormControl && !e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat) {
         const current = authoringRef.current;
         let next: AuthoringState | null = null;
@@ -199,7 +229,23 @@ const GameCanvas = () => {
         const game = new wasmModule.Game();
         gameInstance = game;
         game.setSoundCallback((soundName: string) => audioManager.playSfx(soundName));
-        game.setLevelCompleteCallback(() => setLevelComplete(true));
+        const storage = browserStorage();
+        progressRef.current = loadProgress(storage);
+        const remember = (progress: Progress) => {
+          progressRef.current = progress;
+          saveProgress(storage, progress);
+        };
+        game.setLevelCompleteCallback(() => {
+          const levelId = simLevelIdRef.current;
+          remember(withCompleted(progressRef.current, levelId));
+          setFinishedCount(completedCount(levelsRef.current, progressRef.current));
+          const route = resolveNextLevel(levelsRef.current, levelId);
+          if (route.kind === 'end' && route.reason === 'unknown-next') {
+            console.warn(`[manifest] level "${levelId}" has next "${levelsRef.current.find((l) => l.id === levelId)?.next}", which is not in the manifest: the route ends there.`);
+          }
+          setPhase(pauseRef.current.complete());
+        });
+        game.setCheckpointCallback((index) => remember(withCheckpoint(progressRef.current, simLevelIdRef.current, index)));
 
         // Handles webglcontextlost/restored itself: the loop below pauses on loss and resumes once textures are back.
         const renderer = new Renderer(canvas, vertexShaderSource, fragmentShaderSource, backgroundVertexSource, backgroundFragmentSource);
@@ -248,7 +294,7 @@ const GameCanvas = () => {
             setAvailableLevels(DEFAULT_LEVELS);
           }
         };
-        const loadLevelData = async (targetLevelId?: string, cacheBust: boolean = false) => {
+        const loadLevelData = async (targetLevelId?: string, cacheBust: boolean = false, restart: boolean = false) => {
           const targetLevel = resolveLevelEntry(levelsRef.current, targetLevelId);
           currentLevelIdRef.current = targetLevel.id;
           setCurrentLevelId(targetLevel.id);
@@ -278,6 +324,15 @@ const GameCanvas = () => {
               const normalized = normalizeLevelData(levelObj);
               const { coreLevel } = normalized;
               game.loadLevel(coreLevel);
+              simLevelIdRef.current = targetLevel.id;
+              // loadLevel is a pure reset (spawn, nothing reached). Resume a saved checkpoint on top of it, unless this
+              // is a restart, or the level no longer has that checkpoint (edited): then forget it.
+              const savedCheckpoint = progressRef.current.checkpoints[targetLevel.id];
+              if (restart) {
+                if (savedCheckpoint !== undefined) remember(withCheckpoint(progressRef.current, targetLevel.id, undefined));
+              } else if (savedCheckpoint !== undefined && !game.restoreCheckpoint(savedCheckpoint)) {
+                remember(withCheckpoint(progressRef.current, targetLevel.id, undefined));
+              }
               // Same tick as loadLevel: the snapshot no longer carries geometry, so these are what gets drawn.
               assets.platforms = coreLevel.platforms;
               assets.platformVisualFlags = normalized.platformVisualFlags;
@@ -305,14 +360,16 @@ const GameCanvas = () => {
           }
         };
         await loadManifest();
-        await loadLevelData(undefined, false);
+        setFinishedCount(completedCount(levelsRef.current, progressRef.current));
+        // Boot where the player left off: the first level not yet finished (the first entry when all are).
+        await loadLevelData(startingLevel(levelsRef.current, progressRef.current)?.id, false);
         if (disposed) return;
 
         // Reload function for rapid iteration (R key, level select, digits, overlay buttons)
-        reloadLevelRef.current = async (targetLevelId?: string, cacheBust: boolean = false) => {
+        reloadLevelRef.current = async (targetLevelId?: string, cacheBust: boolean = false, restart: boolean = false) => {
           try {
-            await loadLevelData(targetLevelId, cacheBust);
-            setLevelComplete(false);
+            await loadLevelData(targetLevelId, cacheBust, restart);
+            setPhase(pauseRef.current.resume());
           } catch (e) {
             console.warn('Failed to reload level:', e);
           }
@@ -355,6 +412,7 @@ const GameCanvas = () => {
           renderer,
           input,
           assets,
+          paused: () => pauseRef.current.isPaused(),
           beforeFrame: applyPendingSize,
           overlay: authoringOverlay,
           cullDebug: () => cullDebugRef.current,
@@ -381,6 +439,20 @@ const GameCanvas = () => {
       if (gameInstance) gameInstance.delete();
     };
   }, []);
+
+  const resume = () => setPhase(pauseRef.current.resume());
+
+  const resetProgress = () => {
+    clearProgress(browserStorage());
+    progressRef.current = emptyProgress();
+    setFinishedCount(0);
+    void reloadLevelRef.current?.(levelsRef.current[0]?.id, false, true);
+  };
+
+  // Only read on the complete screen: where it leads, and nowhere past the last level (no wrap-around).
+  const route = resolveNextLevel(availableLevels, currentLevelId);
+
+  const overlayButton: React.CSSProperties = { padding: '8px 14px', borderRadius: 6, border: '1px solid #0ff', background: '#022', color: '#0ff', cursor: 'pointer' };
 
   const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newVolume = parseFloat(e.target.value);
@@ -443,8 +515,17 @@ const GameCanvas = () => {
           value={volume}
           onChange={handleVolumeChange}
         />
+        <button
+          type="button"
+          data-testid="reset-progress"
+          onClick={resetProgress}
+          title="Forget finished levels and checkpoints, and start again from the first level"
+          style={{ background: 'rgba(0,0,0,0.75)', color: '#0ff', border: '1px solid #0ff', borderRadius: 4, padding: '2px 6px', fontSize: 11, fontFamily: 'monospace', cursor: 'pointer' }}
+        >
+          Reset progress ({finishedCount}/{availableLevels.length})
+        </button>
         <div style={{ fontSize: '11px', opacity: 0.7, fontFamily: 'monospace', color: '#0ff' }}>
-          1-9: switch map • R: reload map • C: switch dog • E: ability<br />G: grid (Shift+G: spacing) • H: authoring mode (P: copy platform) • K: cull debug
+          Esc: pause • 1-9: switch map • R: restart map • C: switch dog • E: ability<br />G: grid (Shift+G: spacing) • H: authoring mode (P: copy platform) • K: cull debug
         </div>
       </div>
       <div style={{ position: 'absolute', left: '10px', top: '10px', zIndex: 30, color: '#0ff', background: 'rgba(0,0,0,0.6)', padding: '6px', fontFamily: 'monospace', fontSize: '12px', borderRadius: '4px', maxWidth: '45%' }}>
@@ -498,36 +579,55 @@ const GameCanvas = () => {
       <div style={{ position: 'absolute', left: '10px', bottom: '10px', zIndex: 30, color: '#0ff', background: 'rgba(0,0,0,0.6)', padding: '6px', fontFamily: 'monospace', fontSize: '11px', borderRadius: '4px' }}>
         level: {currentLevelMetadata.id} ({currentLevelId})
       </div>
-      {levelComplete && (
-        <div style={{
-          position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-          backgroundColor: 'rgba(0, 0, 0, 0.8)', color: '#fff',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: '2rem', zIndex: 20
-        }}>
+      {phase === 'paused' && (
+        <div
+          data-testid="pause-overlay"
+          style={{
+            position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.55)', color: '#fff',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 20,
+          }}
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, fontSize: '1.6rem' }}>
+            <div>Paused</div>
+            <button type="button" onClick={resume} style={overlayButton}>Resume (Esc)</button>
+          </div>
+        </div>
+      )}
+      {phase === 'complete' && (
+        <div
+          data-testid="level-complete"
+          style={{
+            position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.8)', color: '#fff',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: '2rem', zIndex: 20
+          }}
+        >
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
             <div>Level Complete!</div>
+            {route.kind === 'end' && (
+              <div data-testid="route-end" style={{ fontSize: '1rem', opacity: 0.85 }}>That&apos;s the end of the route.</div>
+            )}
             <div style={{ display: 'flex', gap: 10 }}>
               <button
                 type="button"
-                onClick={() => { void reloadLevelRef.current?.(currentLevelId, true); }}
-                style={{ padding: '8px 14px', borderRadius: 6, border: '1px solid #0ff', background: '#022', color: '#0ff', cursor: 'pointer' }}
+                data-testid="complete-reload"
+                onClick={() => { void reloadLevelRef.current?.(currentLevelId, true, true); }}
+                style={overlayButton}
               >
                 Reload
               </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const currentIndex = availableLevels.findIndex((level) => level.id === currentLevelId);
-                  const nextLevel = currentIndex >= 0 ? availableLevels[(currentIndex + 1) % availableLevels.length] : undefined;
-                  if (nextLevel) {
-                    void reloadLevelRef.current?.(nextLevel.id, false);
-                  }
-                }}
-                style={{ padding: '8px 14px', borderRadius: 6, border: '1px solid #0ff', background: '#044', color: '#0ff', cursor: 'pointer' }}
-              >
-                Next
-              </button>
+              {route.kind === 'next' && (
+                <button
+                  type="button"
+                  data-testid="complete-next"
+                  onClick={() => { void reloadLevelRef.current?.(route.level.id, false); }}
+                  style={{ ...overlayButton, background: '#044' }}
+                >
+                  Next
+                </button>
+              )}
             </div>
           </div>
         </div>

@@ -3,6 +3,7 @@
     {
       "id": "test-1",
       "file": "test-1.json",
+      "next": "demo-decor",
       "name": "Voltage Valley - First Steps",
       "description": "Learn movement, abilities, and goal flow with Bolts and Volts.",
       "author": "Core Team"
@@ -10,6 +11,7 @@
     {
       "id": "demo-decor",
       "file": "demo-decor.json",
+      "next": "demo-pano",
       "name": "Decor Depth Demo",
       "description": "Showcases layered decor, parallax backgrounds, and vertical camera movement.",
       "author": "Core Team"
@@ -17,6 +19,7 @@
     {
       "id": "demo-pano",
       "file": "demo-pano.json",
+      "next": "courier-1",
       "name": "Painted Panorama Demo",
       "description": "World-space painted background with platforms aligned to its ledges, ramp and landmarks.",
       "author": "Core Team"

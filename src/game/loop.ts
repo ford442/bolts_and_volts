@@ -13,8 +13,12 @@ export const MAX_STEPS_PER_FRAME = 4;
 /**
  * Add `elapsedSeconds` of real time to the accumulator and return how many fixed ticks to run now plus the
  * leftover (in [0, FIXED_STEP) unless the cap was hit, in which case the backlog is discarded).
+ *
+ * `paused` runs no ticks and banks no time: the elapsed time is dropped (not added up for later), so resuming does
+ * not replay it as a burst. The leftover from before the pause is kept.
  */
-export const advanceAccumulator = (accumulator: number, elapsedSeconds: number): { steps: number; accumulator: number } => {
+export const advanceAccumulator = (accumulator: number, elapsedSeconds: number, paused = false): { steps: number; accumulator: number } => {
+  if (paused) return { steps: 0, accumulator };
   let acc = accumulator + Math.max(0, elapsedSeconds);
   // Tolerate float error so an exact multiple of FIXED_STEP is not split into n-1 steps plus a near-full remainder.
   const eps = 1e-9;
@@ -55,6 +59,12 @@ export type GameLoopOptions = {
   assets: SceneAssets;
   /** Runs first every frame (e.g. apply a pending canvas resize, which must happen right before drawing). */
   beforeFrame?: () => void;
+  /**
+   * Read every frame, and again before each tick. While true the simulation is not touched (no `handleInput`, no
+   * `update`), but the last snapshot is still drawn, so the frame stays on screen under an overlay. A tick that sets
+   * it (the level-complete callback) also stops the rest of that frame's ticks.
+   */
+  paused?: () => boolean;
   /** Authoring overlay for this frame, from the freshly read snapshot. */
   overlay?: (frame: FrameState) => AuthoringOverlay | null;
   cullDebug?: () => boolean;
@@ -63,8 +73,8 @@ export type GameLoopOptions = {
 };
 
 /**
- * Owns `requestAnimationFrame`: fixed-step simulation, one snapshot read, one `drawScene` per frame.
- * Returns a stop function.
+ * Owns `requestAnimationFrame`: fixed-step simulation, one snapshot read, one `drawScene` per frame (also while
+ * `paused`, which only stops the simulation). Returns a stop function.
  *
  * A lost WebGL context pauses the whole loop (simulation included, so the game does not run on unseen); the renderer's
  * `restored` resumes it with a fresh clock, so the paused time is not replayed as a burst of ticks.
@@ -97,9 +107,10 @@ export const startGameLoop = (options: GameLoopOptions): (() => void) => {
 
     const elapsed = lastTime === null ? 0 : (timestamp - lastTime) / 1000;
     lastTime = timestamp;
-    const advanced = advanceAccumulator(accumulator, elapsed);
+    const advanced = advanceAccumulator(accumulator, elapsed, options.paused?.() ?? false);
     accumulator = advanced.accumulator;
     for (let i = 0; i < advanced.steps; i++) {
+      if (options.paused?.()) break;
       game.handleInput(input.snapshot());
       game.update(FIXED_STEP);
     }

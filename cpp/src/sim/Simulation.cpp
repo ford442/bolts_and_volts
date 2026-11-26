@@ -39,6 +39,9 @@ void Simulation::loadLevel(const LevelSpec& level) {
     platformGrid_.build(platforms_);
     goals_ = level.goals;
     goalReached_.assign(goals_.size(), false);
+    checkpoints_ = level.checkpoints;
+    checkpointInside_.assign(checkpoints_.size(), false);
+    activeCheckpoint_ = -1;
     bounds_ = level.bounds;
     cameraTuning_ = level.camera;
     cameraTuning_.verticalDeadzone = std::max(0.0f, cameraTuning_.verticalDeadzone);
@@ -84,7 +87,11 @@ void Simulation::loadLevel(const LevelSpec& level) {
     jumpBuffered_ = false;
     jumpBufferTimer_ = 0.0f;
 
-    // Camera starts on the player (no lerp).
+    snapCamera();
+}
+
+// Camera on the player, no lerp.
+void Simulation::snapCamera() {
     camera_.x = player_.position.x;
     camera_.y = cameraTuning_.followY ? player_.position.y : 0.0f;
     clampCamera();
@@ -140,6 +147,7 @@ void Simulation::update(float deltaTime) {
     updateGroundState(wasGrounded, dt);
     moveHazards(dt);
     if (touchingHazard()) respawn();
+    updateCheckpoints();
     updatePayload();
     updateAnimation(dt);
     updateCamera(dt);
@@ -175,6 +183,21 @@ void Simulation::switchCharacter() {
     emit(SimEventType::CharacterSwitched);
 }
 
+bool Simulation::restoreCheckpoint(int index) {
+    if (index < 0 || static_cast<std::size_t>(index) >= checkpoints_.size()) return false;
+    activeCheckpoint_ = index;
+    respawnPoint_ = checkpoints_[static_cast<std::size_t>(index)].position;
+    player_.position = respawnPoint_;
+    player_.velocity = {0.0f, 0.0f};
+    player_.grounded = false;
+    coyoteTimer_ = 0.0f;
+    jumpBuffered_ = false;
+    jumpBufferTimer_ = 0.0f;
+    syncCheckpointContact();  // standing in it already: not an arrival
+    snapCamera();
+    return true;
+}
+
 void Simulation::drainEvents(std::vector<SimEvent>& out) {
     out.clear();
     out.swap(events_);
@@ -196,8 +219,8 @@ float Simulation::jumpStrength() const {
     return character_ == CharacterType::Bolts ? CharacterStats::BOLTS_JUMP_STRENGTH : CharacterStats::VOLTS_JUMP_STRENGTH;
 }
 
-void Simulation::emit(SimEventType type) {
-    events_.push_back({type, player_.position, player_.velocity});
+void Simulation::emit(SimEventType type, int index) {
+    events_.push_back({type, player_.position, player_.velocity, index});
 }
 
 bool Simulation::tryBufferedJump() {
@@ -427,6 +450,27 @@ void Simulation::checkGoals() {
     }
 }
 
+// A checkpoint fires when the player starts overlapping it and re-arms once they have left, so standing in one (or
+// being respawned onto one) does not repeat. Several entered on one tick fire in index order; the last is the active one.
+void Simulation::updateCheckpoints() {
+    for (std::size_t i = 0; i < checkpoints_.size(); ++i) {
+        const bool inside = boxesOverlap(player_.position, player_.size, checkpoints_[i].position, checkpoints_[i].size, 0.0f);
+        if (inside && !checkpointInside_[i]) {
+            activeCheckpoint_ = static_cast<int>(i);
+            respawnPoint_ = checkpoints_[i].position;
+            emit(SimEventType::CheckpointReached, activeCheckpoint_);
+        }
+        checkpointInside_[i] = inside;
+    }
+}
+
+// Record who the player overlaps right now without firing anything (after a teleport onto the respawn point).
+void Simulation::syncCheckpointContact() {
+    for (std::size_t i = 0; i < checkpoints_.size(); ++i) {
+        checkpointInside_[i] = boxesOverlap(player_.position, player_.size, checkpoints_[i].position, checkpoints_[i].size, 0.0f);
+    }
+}
+
 void Simulation::startCooldown() {
     abilityState_ = AbilityState::Cooldown;
     abilityCooldownTimer_ = cooldownFor(character_);
@@ -469,8 +513,8 @@ bool Simulation::touchingHazard() const {
     return false;
 }
 
-// Back to the spawn, at rest, with the payload on its pad. Hazards, terminals and goals keep their state; only a
-// level load resets those.
+// Back to the respawn point (the level spawn, or the latest checkpoint), at rest, with the payload on its pad. Hazards,
+// terminals, goals and the checkpoint keep their state; only a level load resets those.
 void Simulation::respawn() {
     emit(SimEventType::Respawned);  // where it happened
     player_.position = respawnPoint_;
@@ -486,6 +530,7 @@ void Simulation::respawn() {
         payload_->position = payload_->origin;
         payload_->carried = false;
     }
+    syncCheckpointContact();
 }
 
 void Simulation::updatePayload() {

@@ -12,7 +12,7 @@ Verified against the loaders as of this writing:
 
 1. `GameCanvas` fetches `/levels/manifest.json`, then `/levels/<file>` for the selected entry.
 2. `normalizeLevelData` validates the JSON and splits it in two:
-   - **Core level** (`name`, `description`, `spawn`, `bounds`, `camera`, `platforms`, `goals`, `hazards`, `payload`, `terminals`) is passed to C++ via `Game::loadLevel`. Only these whitelisted keys reach WASM, as plain numbers (C++ never parses JSON).
+   - **Core level** (`name`, `description`, `spawn`, `bounds`, `camera`, `platforms`, `goals`, `checkpoints`, `hazards`, `payload`, `terminals`) is passed to C++ via `Game::loadLevel`. Only these whitelisted keys reach WASM, as plain numbers (C++ never parses JSON).
    - **TS-only data** (`backgroundLayers`, `decor`, per-platform `visual`, `author`) stays in the renderer/UI layer. C++ never sees it.
 3. Parsing is **lenient**: malformed entries are skipped or defaulted rather than rejected, so a broken level still boots.
 4. `validateLevel` (`src/lib/levelValidator.ts`) walks the same JSON and reports everything the loader dropped or defaulted. Each message has the form
@@ -38,6 +38,7 @@ Verified against the loaders as of this writing:
 | `camera` | no | object | C++ | See below. |
 | `platforms` | effectively yes | array | C++ + renderer | If missing/empty/all-invalid, a **built-in fallback platform set** is loaded instead. |
 | `goals` | no | array | C++ | Touching one completes the level (while carrying the `payload`, if the level has one). |
+| `checkpoints` | no | array | C++ | Entering one makes it the respawn point. |
 | `hazards` | no | array | C++ + renderer | Touching one respawns the player. Optional patrol. |
 | `payload` | no | object | C++ + renderer | One pickup. When present, goals only complete while it is carried. |
 | `terminals` | no | array | C++ + renderer | Volts + `E` disables a hazard. |
@@ -60,6 +61,14 @@ Visual flags are index-aligned with *valid* platforms (invalid entries are dropp
 
 Same shape as a platform without `visual`: `position` + `size`, both required. Goals do not need a platform under them. Duplicated goals each trigger independently.
 
+### `checkpoints[]`
+
+Same shape as a goal: `position` + `size`, both required, plus an optional `label`. A checkpoint is a trigger, not a solid, and has no art yet (use `decor` to mark one). The first tick the player's box **overlaps** it (touching edges do not count), its centre becomes the respawn point and the sim emits one `CheckpointReached` for it. It re-arms once the player has left, so standing in one, or being respawned onto one, does not repeat; entering the same one again later does. The **latest** one entered is the respawn point, whatever its index, and `loadLevel` always starts a level with none (respawn = `spawn`).
+
+Respawn puts the player at the checkpoint's **centre**, at rest, so set `position.y` where the player's centre should stand (a resting player is half its height, 0.4, above the platform top), not on the floor. Everything else about a respawn is unchanged: the payload goes back to its pad (so a checkpoint past the pad means walking back for the package), hazards, terminals and goals keep their state.
+
+Checkpoints are indexed by position among the **valid** entries, like hazards. The index is what the shell saves per level (see *Progress*), so reordering or removing checkpoints in a level makes an old saved index point at a different one, or at none (then the game starts that level from the spawn).
+
 ### `hazards[]`
 
 | Field | Required | Type | Notes |
@@ -69,7 +78,7 @@ Same shape as a platform without `visual`: `position` + `size`, both required. G
 | `patrol` | no | `{x0, x1, speed}` | Moves along x between `x0` and `x1` at a constant `speed` (units/s), turning at each end. All three must be finite numbers or the hazard is static. `x0 > x1` is swapped, a negative `speed` uses its absolute value, `position.x` outside the range is clamped into it, and `speed: 0` is static. |
 | `label` | no | string | Author note; ignored. |
 
-Hazards are triggers, not solid: an **overlap** (touching edges do not count) puts the player back at `spawn` at rest, ends any active ability (ready again), and returns a carried payload to its pad. Hazards, terminals and goals keep their state through a respawn; only a level load (`R`, level switch) resets them. A hazard a terminal has disabled stops moving and is drawn faded. First art is a tinted quad (red; grey when off).
+Hazards are triggers, not solid: an **overlap** (touching edges do not count) puts the player back at the respawn point (`spawn`, or the latest checkpoint) at rest, ends any active ability (ready again), and returns a carried payload to its pad. Hazards, terminals and goals keep their state through a respawn; only a level load (`R`, level switch) resets them. A hazard a terminal has disabled stops moving and is drawn faded. First art is a tinted quad (red; grey when off).
 
 Hazards are indexed by position among the **valid** entries (like platform `visual` flags): an entry the loader skips does not take an index, and the validator says when that shifts a terminal's target.
 
@@ -199,8 +208,26 @@ Parallax semantics: the item is drawn with camera position × factor. `1.0` move
 | `file` | yes | Filename inside `public/levels/`. |
 | `name`, `description`, `author` | no | Fallbacks used when the level JSON lacks the same field (UI-level; the level file's `name`/`description` takes priority). |
 | `music` | no | **Parsed but currently unused** — no code reads it yet; music is always `./background-music.mp3`. |
+| `next` | no | Id of the level the *level complete* screen offers next. Trimmed; blank or non-string is dropped. |
 
 If the manifest is missing/invalid, the game falls back to a single built-in `test-1` entry. The first valid entry is the default level; an unknown id also resolves to the first entry.
+
+### The route: `next`
+
+Only the level-complete screen follows `next` (`resolveNextLevel` in `src/game/session.ts`). The dropdown and `1`-`9` still jump to any level. When the entry has no `next`, or it names an id the manifest does not have, the screen shows no Next button and one line saying the route ends; it **never wraps** to the first level. An unknown id is also a `console.warn` when the level is completed. The shipped manifest chains `test-1 → demo-decor → demo-pano → courier-1` (the end); a test keeps it free of dangling ids and loops.
+
+### Progress (`localStorage`)
+
+Kept in the browser only, under the key `bolts-and-volts:progress:v1`: `{ "completed": [levelId, ...], "checkpoints": { levelId: index } }`. No server, no account. A missing, unreadable or blocked store just means no progress.
+
+- **Boot** starts at the first manifest entry not in `completed`, or the first entry when all are. Ids no longer in the manifest are ignored.
+- **Completing** a level adds it to `completed` and forgets its checkpoint. A checkpoint is saved as soon as it is entered.
+- **Loading a level** (boot, dropdown, `1`-`9`, Next) puts the player back on that level's saved checkpoint via `Game::restoreCheckpoint(index)` after `loadLevel`. Only the position is restored: velocity, character and ability timers start fresh, and hazard / terminal / goal / payload state is the fresh level's. **`R` and the overlay's Reload restart** the level from its spawn and forget its checkpoint.
+- **Reset progress** (top-right) removes the key and reloads the first level from its spawn.
+
+### Pause
+
+`Escape` toggles a pause: no input or ticks reach the simulation, the last snapshot keeps drawing under a small overlay. Reaching a goal pauses too, on the complete screen, where `Escape` does nothing; Reload, Next, the dropdown and `1`-`9` end the pause. `C` is ignored while paused.
 
 ## Minimal working example
 
@@ -221,7 +248,7 @@ Collision + spawn + goal; everything else defaults.
 }
 ```
 
-Then register it in `manifest.json` (`{ "id": "minimal", "file": "minimal.json" }`).
+Then register it in `manifest.json` (`{ "id": "minimal", "file": "minimal.json" }`), and add `"next": "minimal"` to the entry that should lead to it.
 
 ## Richer example (layers + decor + camera)
 

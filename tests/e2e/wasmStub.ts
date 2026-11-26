@@ -31,8 +31,17 @@ export const wasmStubSource = (scene: StubScene): string => `
   const scene = ${JSON.stringify({ player: { x: -3, y: 1 }, camera: { x: 0, y: 0 }, levelDescription: '', character: 0, abilityState: 0, abilityCooldown: 0, ...scene })};
   const HEAPF32 = new Float32Array(4096);
   const PTR_FLOATS = 16; // non-zero offset, like a real heap allocation
+  // Test hooks on the page: tick counts, and a way to fire what the real simulation would report.
+  let onComplete = null;
+  let onCheckpoint = null;
+  const stub = globalThis.__stub = {
+    updates: 0,
+    restored: [],
+    completeLevel: () => onComplete && onComplete(),
+    reachCheckpoint: (index) => onCheckpoint && onCheckpoint(index),
+  };
   class Game {
-    update() {}
+    update() { stub.updates++; }
     handleInput() {}
     captureFrame() {
       if (scene.drainingAbility) scene.abilityCooldown = scene.abilityCooldown > 0.011 ? scene.abilityCooldown - 0.01 : 1;
@@ -54,7 +63,9 @@ export const wasmStubSource = (scene: StubScene): string => `
     getLevelDescription() { return scene.levelDescription; }
     setSoundCallback() {}
     loadLevel() {}
-    setLevelCompleteCallback() {}
+    setLevelCompleteCallback(cb) { onComplete = cb; }
+    setCheckpointCallback(cb) { onCheckpoint = cb; }
+    restoreCheckpoint(index) { stub.restored.push(index); return true; }
     switchCharacter() { scene.character = scene.character === 0 ? 1 : 0; }
     getCurrentCharacter() { return scene.character; }
     useAbility() {}
@@ -76,7 +87,16 @@ export const stubLevel = (scene: StubScene) => ({
   goals: scene.goals ?? [],
 });
 
-export const routeWasmStub = async (page: Page, scene: StubScene) => {
+export type StubRoutes = {
+  /** Served as `/levels/manifest.json` instead of the real one (every entry's file still gets `stubLevel`). */
+  manifest?: unknown;
+};
+
+export const routeWasmStub = async (page: Page, scene: StubScene, routes: StubRoutes = {}) => {
+  if (routes.manifest !== undefined) {
+    await page.route('**/levels/manifest.json*', (route) =>
+      route.fulfill({ contentType: 'application/json', body: JSON.stringify(routes.manifest) }));
+  }
   await page.route('**/src/wasm/main.js*', (route) =>
     route.fulfill({ contentType: 'application/javascript; charset=utf-8', body: wasmStubSource(scene) }));
   await page.route(
