@@ -44,10 +44,13 @@ export type SceneAssets = {
   goals: Platform[];
 };
 
+/** What the loop needs from the renderer (narrow, so tests can pass a fake). */
+export type LoopRenderer = Pick<Renderer, 'drawScene' | 'isContextLost' | 'onContextChange'>;
+
 export type GameLoopOptions = {
   module: GameModule;
   game: Game;
-  renderer: Renderer;
+  renderer: LoopRenderer;
   input: KeyboardInput;
   assets: SceneAssets;
   /** Runs first every frame (e.g. apply a pending canvas resize, which must happen right before drawing). */
@@ -62,6 +65,9 @@ export type GameLoopOptions = {
 /**
  * Owns `requestAnimationFrame`: fixed-step simulation, one snapshot read, one `drawScene` per frame.
  * Returns a stop function.
+ *
+ * A lost WebGL context pauses the whole loop (simulation included, so the game does not run on unseen); the renderer's
+ * `restored` resumes it with a fresh clock, so the paused time is not replayed as a burst of ticks.
  */
 export const startGameLoop = (options: GameLoopOptions): (() => void) => {
   const { module, game, renderer, input, assets } = options;
@@ -71,10 +77,22 @@ export const startGameLoop = (options: GameLoopOptions): (() => void) => {
   let accumulator = 0;
   let lastTime: number | null = null;
   let rafId = 0;
+  let scheduled = false;
   let stopped = false;
 
+  const schedule = () => {
+    if (stopped || scheduled || renderer.isContextLost()) return;
+    scheduled = true;
+    rafId = requestAnimationFrame(tick);
+  };
+  const pause = () => {
+    if (scheduled) cancelAnimationFrame(rafId);
+    scheduled = false;
+  };
+
   const tick = (timestamp: number) => {
-    if (stopped) return;
+    scheduled = false;
+    if (stopped || renderer.isContextLost()) return;
     options.beforeFrame?.();
 
     const elapsed = lastTime === null ? 0 : (timestamp - lastTime) / 1000;
@@ -110,12 +128,23 @@ export const startGameLoop = (options: GameLoopOptions): (() => void) => {
       entities,
     );
     options.afterDraw?.(frame);
-    rafId = requestAnimationFrame(tick);
+    schedule();
   };
 
-  rafId = requestAnimationFrame(tick);
+  const stopListening = renderer.onContextChange((status) => {
+    if (status === 'lost') {
+      pause();
+      return;
+    }
+    lastTime = null;
+    accumulator = 0;
+    schedule();
+  });
+
+  schedule();
   return () => {
     stopped = true;
-    cancelAnimationFrame(rafId);
+    pause();
+    stopListening();
   };
 };

@@ -6,6 +6,8 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- Instanced sprite batching. `drawScene` now pushes every sprite, in paint order and after the existing CPU cull, into a `SpriteBatch` (`src/gl/spriteBatch.ts`, no GL, unit-tested in `tests/unit/spriteBatch.test.ts`) and draws each run of same-texture sprites with one `drawArraysInstanced` instead of one `drawArrays` plus ~8 uniform writes per quad. Position, size, frame, sheet size, flip, alpha and tint are per-instance attributes (`tex.vert.glsl`), so the player tint is the player instance's own and cannot leak into a later sprite. A screen of 60 same-texture platforms is one draw call (`Renderer.getDrawStats()`, checked in `tests/e2e/renderer.spec.ts`). Context attributes are unchanged.
+- WebGL context loss handling. The renderer `preventDefault`s `webglcontextlost`, the game loop stops on it and resumes on restore with a fresh clock; `Renderer.restore()` rebuilds programs, VAOs, buffers and one-time state and re-uploads every texture into the same `TextureObject`. Tested with a real loss/restore through `WEBGL_lose_context` (e2e) and a fake renderer for the loop (`tests/unit/loop.test.ts`).
 - Physics broadphase: `cpp/src/sim/PlatformGrid` (uniform 4-unit grid over static platforms, built in `Simulation::loadLevel`). The vertical and horizontal resolves test only its candidates, in ascending index order with a re-query after each push, so every trace is bit-identical to the old full scan (checked against it on 600k random ticks). New native cases: a fall with 300 distant platforms lands like the same fall alone; overlapping platforms push out in index order, including a push into a platform in another cell.
 - Multi-layer background rendering from level JSON (`backgroundLayers`) with per-layer parallax/scale/offset.
 - Decor pipeline (`decor`) for non-colliding depth-aware visuals with per-item texture/parallax/layer controls.
@@ -49,6 +51,7 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- `createWebGL2Context` retried without `desynchronized` only when `getContext` returned null; a throw skipped the retry. Both now retry once.
 - Every jump also played the `land` sound and land particles on its takeoff tick, and granted coyote time while rising, so re-pressing jump within 0.12 s of takeoff gave a double jump.
 - Ground pound (and any exact landing) could eject the player sideways to a platform edge, e.g. on test-1's spawn floor (the old AGENTS.md "pound tunnels through thin floors" issue). The cause was float rounding of the resting height, which made the horizontal resolve see an overlap. Overlaps of ≤ 1e-4 now count as contact.
 - Pressing jump and ability on the same tick on the ground triggered a ground pound at takeoff.

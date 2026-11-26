@@ -145,9 +145,10 @@ The Emscripten build produces an ES module (`src/wasm/main.js`) with `EXPORT_ES6
 ### Rendering
 
 `src/gl/renderer.ts` is a hand-written WebGL2 renderer:
-- **Sprite program:** draws textured quads with sprite-sheet animation support (`u_sprite_frame_coord`, `u_flip_horizontal`).
+- **Sprite program, instanced:** every sprite (platforms, decor, world background layers, goals, entities, the player, particles, debug and authoring quads) is pushed in paint order into a `SpriteBatch` (`src/gl/spriteBatch.ts`, pure, unit-tested) after the CPU visible-rect cull; each run of same-texture sprites is one `drawArraysInstanced`. Frame, flip, alpha and tint are per-instance attributes (`a_model`, `a_frame`, `a_sheet`, `a_tint` in `tex.vert.glsl`), so the player's tint cannot leak into later sprites. Runs are never reordered (blending makes order visible).
 - **Background program:** full-screen quad with parallax scrolling based on camera position.
 - **Context and sizing:** the WebGL2 context is opaque (`alpha: false`), non-MSAA, with no depth/stencil, and requests `desynchronized` presentation (one retry without it). The canvas backing store follows its CSS box × `min(devicePixelRatio, 2)` (`src/lib/canvasSize.ts`, applied by the game loop through `Renderer.resize`); the world is always 10 units across the backing-store width. Each program has a VAO that is bound together with it (`useSpriteProgram` / `useBackgroundProgram`); constant GL state is set once at init.
+- **Context loss:** the renderer `preventDefault`s `webglcontextlost`, reports `isContextLost()` / `onContextChange('lost' | 'restored')` (the game loop pauses and resumes on these), and on `webglcontextrestored` rebuilds programs, VAOs, buffers and one-time state (`initGL`) and re-uploads every texture into the same `TextureObject` from its recorded source (`restore()`).
 - **Debug overlays:** semi-transparent red (player) and green (platform) collision boxes, hidden unless `Renderer.setCollisionDebug(true)`.
 - **Texture anchors:** when loading the player spritesheet, the renderer inspects alpha pixels to compute per-frame bottom offsets so the sprite’s feet align with the collision box.
 

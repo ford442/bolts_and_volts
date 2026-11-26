@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest';
-import { FIXED_STEP, MAX_STEPS_PER_FRAME, advanceAccumulator } from '../../src/game/loop';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { FIXED_STEP, MAX_STEPS_PER_FRAME, advanceAccumulator, startGameLoop, type GameLoopOptions, type LoopRenderer } from '../../src/game/loop';
+import { FRAME } from '../../src/game/snapshot';
+import type { ContextStatus, TextureObject } from '../../src/gl/renderer';
 
 /** Feed frame durations (ms) through the accumulator; return the step count of each frame. */
 const run = (framesMs: number[], onStep: () => void = () => {}): number[] => {
@@ -67,5 +69,83 @@ describe('jump height under fixed step', () => {
 
   it('display rate does not change the apex', () => {
     expect(simulateApex(new Array(180).fill(1000 / 120))).toBe(simulateApex(new Array(90).fill(1000 / 60)));
+  });
+});
+
+describe('startGameLoop and WebGL context loss', () => {
+  // A hand-driven requestAnimationFrame: `frame(ms)` runs whatever callback is pending at that timestamp.
+  let pending: FrameRequestCallback | null = null;
+  const installRaf = () => {
+    pending = null;
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { pending = cb; return 1; });
+    vi.stubGlobal('cancelAnimationFrame', () => { pending = null; });
+  };
+  const frame = (ms: number) => {
+    const cb = pending;
+    pending = null;
+    cb?.(ms);
+  };
+  afterEach(() => vi.unstubAllGlobals());
+
+  const setup = () => {
+    installRaf();
+    let lost = false;
+    const listeners = new Set<(status: ContextStatus) => void>();
+    const emit = (status: ContextStatus) => { lost = status === 'lost'; for (const l of listeners) l(status); };
+    const renderer = {
+      draws: 0,
+      drawScene() { this.draws++; },
+      isContextLost: () => lost,
+      onContextChange: (l: (status: ContextStatus) => void) => { listeners.add(l); return () => listeners.delete(l); },
+    };
+    const heap = new Float32Array(FRAME.HEADER_SIZE);
+    const game = { updates: 0, handleInput() {}, update() { this.updates++; }, captureFrame: () => FRAME.HEADER_SIZE, framePtr: () => 0 };
+    const texture = {} as TextureObject;
+    const options = {
+      module: { HEAPF32: heap },
+      game,
+      renderer: renderer as unknown as LoopRenderer,
+      input: { snapshot: () => ({}) },
+      assets: { playerTexture: texture, platformTexture: texture, backgroundLayers: [], decorLayers: { distant: [], mid: [], foreground: [] }, platforms: [], platformVisualFlags: [], goals: [] },
+    } as unknown as GameLoopOptions;
+    const stop = startGameLoop(options);
+    return { renderer, game, emit, stop, listeners };
+  };
+
+  it('stops drawing and ticking while the context is lost, and resumes on restore without replaying the gap', () => {
+    const { renderer, game, emit, stop, listeners } = setup();
+    frame(0);
+    frame(1000 / 60);
+    expect(renderer.draws).toBe(2);
+    expect(game.updates).toBe(1);
+
+    emit('lost');
+    expect(pending).toBeNull(); // no frame is scheduled while lost
+    frame(10_000);
+    expect(renderer.draws).toBe(2);
+
+    emit('restored');
+    expect(pending).not.toBeNull();
+    frame(60_000); // first frame after restore: fresh clock, so the minute spent lost runs no ticks
+    expect(renderer.draws).toBe(3);
+    expect(game.updates).toBe(1);
+    frame(60_000 + 1000 / 60);
+    expect(game.updates).toBe(2);
+
+    stop();
+    expect(pending).toBeNull();
+    expect(listeners.size).toBe(0);
+    emit('restored'); // a restore after stop must not restart the loop
+    expect(pending).toBeNull();
+  });
+
+  it('a frame already scheduled when the context is lost does not draw', () => {
+    const { renderer, emit, stop } = setup();
+    frame(0);
+    const scheduled = pending;
+    emit('lost');
+    scheduled?.(16); // e.g. the browser had already queued it
+    expect(renderer.draws).toBe(1);
+    stop();
   });
 });
