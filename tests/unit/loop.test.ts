@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { FIXED_STEP, MAX_STEPS_PER_FRAME, advanceAccumulator, startGameLoop, type GameLoopOptions, type LoopRenderer } from '../../src/game/loop';
+import { FIXED_STEP, MAX_STEPS_PER_FRAME, advanceAccumulator, applyMovers, startGameLoop, type GameLoopOptions, type LoopRenderer } from '../../src/game/loop';
 import { FRAME } from '../../src/game/snapshot';
 import type { ContextStatus, TextureObject } from '../../src/gl/renderer';
 
@@ -13,6 +13,22 @@ const run = (framesMs: number[], onStep: () => void = () => {}): number[] => {
     return r.steps;
   });
 };
+
+describe('applyMovers', () => {
+  it('moves the indexed platforms in place and ignores indices past the end', () => {
+    const platforms = [
+      { position: { x: 0, y: 0 }, size: { x: 4, y: 0.2 } },
+      { position: { x: 8, y: -1.6 }, size: { x: 2, y: 0.2 } },
+    ];
+    const moving = platforms[1];
+    applyMovers([{ index: 1, position: { x: 9.25, y: -1.5 } }, { index: 5, position: { x: 1, y: 1 } }], platforms);
+    expect(platforms[1]).toBe(moving);
+    expect(platforms).toEqual([
+      { position: { x: 0, y: 0 }, size: { x: 4, y: 0.2 } },
+      { position: { x: 9.25, y: -1.5 }, size: { x: 2, y: 0.2 } },
+    ]);
+  });
+});
 
 describe('advanceAccumulator', () => {
   it('runs one tick per 60 Hz frame', () => {
@@ -112,7 +128,7 @@ describe('startGameLoop and WebGL context loss', () => {
       game,
       renderer: renderer as unknown as LoopRenderer,
       input: { snapshot: () => ({}) },
-      assets: { playerTexture: texture, platformTexture: texture, backgroundLayers: [], decorLayers: { distant: [], mid: [], foreground: [] }, platforms: [], platformVisualFlags: [], goals: [] },
+      assets: { playerTexture: texture, platformTexture: texture, backgroundLayers: [], decorLayers: { distant: [], mid: [], foreground: [] }, platforms: [], platformVisualFlags: [], goals: [], launchers: [] },
       ...extra,
     } as unknown as GameLoopOptions;
     const stop = startGameLoop(options);

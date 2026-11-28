@@ -14,8 +14,9 @@ public:
     // Default cell edge in world units. The player is 0.5 x 0.8, so a query usually touches 1-4 cells.
     static constexpr float CELL_SIZE = 4.0f;
 
-    // Replace the contents with `platforms` (indices are positions in this vector).
-    void build(const std::vector<Platform>& platforms);
+    // Replace the contents with `platforms` (indices are positions in this vector). An index with `skip[i]` true is
+    // left out entirely (moving platforms: the simulation tests those itself every tick); a short `skip` means false.
+    void build(const std::vector<Platform>& platforms, const std::vector<bool>& skip = std::vector<bool>());
 
     // Fill `out` (cleared first) with the ascending, unique indices of the platforms whose box may overlap the box
     // centred at `center` with `size`. Every platform that boxesOverlap() would report is included.

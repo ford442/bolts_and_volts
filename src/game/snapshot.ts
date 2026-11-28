@@ -3,8 +3,9 @@ import type { Vec2 } from '../wasm/loader';
 /**
  * Float layout of the per-frame snapshot written by `Game::captureFrame()`.
  * Mirrors `FrameLayout` in cpp/src/Types.hpp — change both together. Only what moves or changes state is in it:
- * platforms and goals are static for the life of a `loadLevel`, so the loop draws the arrays it passed in
- * (`SceneAssets` in loop.ts). Header slots 12-13 (the old platform and goal counts) and 18-19 are reserved.
+ * platforms, goals and launchers are static for the life of a `loadLevel`, so the loop draws the arrays it passed in
+ * (`SceneAssets` in loop.ts), except that a moving platform's current centre arrives in the movers block, keyed by
+ * its platform index. Header slots 12-13 (the old platform and goal counts) and 19 are reserved.
  */
 export const FRAME = {
   PLAYER_X: 0,
@@ -24,9 +25,13 @@ export const FRAME = {
   /** 0 or 1. */
   PAYLOAD_COUNT: 16,
   TERMINAL_COUNT: 17,
+  /** Moving platforms. */
+  MOVER_COUNT: 18,
   HEADER_SIZE: 20,
   /** Hazards, payload, terminals: x, y, w, h, flag. */
   ENTITY_STRIDE: 5,
+  /** Movers, after the terminals: platform index (into the level's platforms), x, y (current centre). */
+  MOVER_STRIDE: 3,
   PARTICLE_STRIDE: 4,
 } as const;
 
@@ -44,6 +49,9 @@ export interface Box { position: Vec2; size: Vec2; }
  * the simulation owns it.
  */
 export interface FlagBox extends Box { flag: boolean; }
+
+/** Where a moving platform is this frame. `index` is its position in the level's (valid) platforms. */
+export interface MoverView { index: number; position: Vec2; }
 
 export interface ParticleView {
   position: Vec2;
@@ -75,6 +83,8 @@ export interface FrameState {
   payloads: FlagBox[];
   /** `flag`: used. */
   terminals: FlagBox[];
+  /** Ascending platform index. */
+  movers: MoverView[];
   particles: ParticleView[];
 }
 
@@ -88,6 +98,7 @@ export const createFrameState = (): FrameState => ({
   hazards: [],
   payloads: [],
   terminals: [],
+  movers: [],
   particles: [],
 });
 
@@ -116,8 +127,10 @@ export const readFrame = (data: Float32Array, out: FrameState): FrameState => {
   const hazardCount = data[FRAME.HAZARD_COUNT];
   const payloadCount = data[FRAME.PAYLOAD_COUNT];
   const terminalCount = data[FRAME.TERMINAL_COUNT];
+  const moverCount = data[FRAME.MOVER_COUNT];
   const expected = FRAME.HEADER_SIZE
     + (hazardCount + payloadCount + terminalCount) * FRAME.ENTITY_STRIDE
+    + moverCount * FRAME.MOVER_STRIDE
     + particleCount * FRAME.PARTICLE_STRIDE;
   if (data.length < expected) throw new Error(`frame snapshot truncated: ${data.length} < ${expected} floats`);
 
@@ -138,6 +151,18 @@ export const readFrame = (data: Float32Array, out: FrameState): FrameState => {
   offset = readFlagBoxes(data, offset, hazardCount, out.hazards);
   offset = readFlagBoxes(data, offset, payloadCount, out.payloads);
   offset = readFlagBoxes(data, offset, terminalCount, out.terminals);
+
+  const movers = out.movers;
+  for (let i = 0; i < moverCount; i++) {
+    const o = offset + i * FRAME.MOVER_STRIDE;
+    let m = movers[i];
+    if (!m) movers[i] = m = { index: 0, position: { x: 0, y: 0 } };
+    m.index = data[o];
+    m.position.x = data[o + 1];
+    m.position.y = data[o + 2];
+  }
+  movers.length = moverCount;
+  offset += moverCount * FRAME.MOVER_STRIDE;
 
   const particles = out.particles;
   for (let i = 0; i < particleCount; i++) {

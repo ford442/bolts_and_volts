@@ -19,13 +19,14 @@ enum class SimEventType {
     PayloadPickedUp,   // first overlap with the payload since it was last on its pad
     TerminalUsed,      // Volts used a terminal (its target hazard, if any, is now disabled)
     CheckpointReached, // entered a checkpoint it was not already inside; `index` says which, and it is now the respawn point
+    Launched,          // entered a launcher it was not already inside; `index` says which; velocity is already the launcher's
 };
 
 struct SimEvent {
     SimEventType type;
     Vec2 position;  // player centre when the event happened
     Vec2 velocity;  // player velocity when the event happened
-    int index = -1; // CheckpointReached: the checkpoint's index in the level; -1 for every other event
+    int index = -1; // CheckpointReached / Launched: the checkpoint's or launcher's index in the level; -1 otherwise
 };
 
 #endif // SIM_EVENT_HPP

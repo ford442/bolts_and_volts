@@ -17,7 +17,7 @@ const validLevel = () => ({
 const paths = (level: unknown) => validateLevel(level).map((i) => `${i.severity}:${i.path}`);
 
 describe('validateLevel — shipped levels', () => {
-  for (const name of ['test-1', 'demo-decor', 'demo-pano', 'courier-1']) {
+  for (const name of ['test-1', 'demo-decor', 'demo-pano', 'courier-1', 'courier-2']) {
     it(`${name}.json has no issues`, () => {
       const json = JSON.parse(readFileSync(`public/levels/${name}.json`, 'utf8'));
       expect(validateLevel(json)).toEqual([]);
@@ -177,6 +177,60 @@ describe('validateLevel — hazards, payload, terminals', () => {
     expect(paths(noGoals)).toEqual(['warning:goals', 'warning:payload']);
     expect(paths({ ...courier(), payload: [] })).toEqual(['error:payload']);
     expect(paths({ ...courier(), payload: { position: { x: 0, y: 0 } } })).toEqual(['error:payload.size']);
+  });
+});
+
+describe('validateLevel — one-way and moving platforms, launchers', () => {
+  const traversalLevel = () => ({
+    ...validLevel(),
+    platforms: [
+      { position: { x: 0, y: -3 }, size: { x: 10, y: 0.4 } },
+      { position: { x: 2, y: -1 }, size: { x: 2, y: 0.2 }, oneWay: true },
+      { position: { x: 4, y: -2 }, size: { x: 2, y: 0.2 }, patrol: { x0: 4, y0: -2, x1: 8, y1: 0, speed: 1.5 } },
+    ],
+    launchers: [{ position: { x: 6, y: -2.6 }, size: { x: 1, y: 0.4 }, velocity: { x: 0, y: 9 }, label: 'pad' }],
+  });
+
+  it('is silent for the documented shape', () => {
+    expect(validateLevel(traversalLevel())).toEqual([]);
+  });
+
+  it('warns when a patrol is missing speed, and says the platform stays static', () => {
+    const level = traversalLevel();
+    level.platforms[2] = { position: { x: 4, y: -2 }, size: { x: 2, y: 0.2 }, patrol: { x0: 4, y0: -2, x1: 8, y1: 0 } as never };
+    const issues = validateLevel(level);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ severity: 'warning', path: 'platforms[2].patrol.speed', found: 'missing', effect: 'patrol ignored, platform is static' });
+  });
+
+  it('flags a bad oneWay, a non-object patrol, zero speed, a zero-length path and an off-path start', () => {
+    const level = traversalLevel();
+    level.platforms.push(
+      { position: { x: 0, y: 0 }, size: { x: 1, y: 0.2 }, oneWay: 'yes' as never },
+      { position: { x: 0, y: 0 }, size: { x: 1, y: 0.2 }, patrol: 3 as never },
+      { position: { x: 0, y: 0 }, size: { x: 1, y: 0.2 }, patrol: { x0: 0, y0: 0, x1: 2, y1: 0, speed: 0 } },
+      { position: { x: 1, y: 1 }, size: { x: 1, y: 0.2 }, patrol: { x0: 1, y0: 1, x1: 1, y1: 1, speed: 2 } },
+      { position: { x: 1, y: 5 }, size: { x: 1, y: 0.2 }, patrol: { x0: 0, y0: 0, x1: 2, y1: 0, speed: -2 } },
+    );
+    expect(paths(level)).toEqual([
+      'warning:platforms[3].oneWay',
+      'warning:platforms[4].patrol',
+      'warning:platforms[5].patrol.speed',
+      'warning:platforms[6].patrol',
+      'warning:platforms[7].patrol.speed',
+      'warning:platforms[7].position',
+    ]);
+    expect(validateLevel(level).at(-1)?.effect).toContain('(1, 0)');
+  });
+
+  it('skips a launcher missing velocity, and flags a non-array and a launcher with no area', () => {
+    const level = traversalLevel();
+    level.launchers.push({ position: { x: 0, y: 0 }, size: { x: 1, y: 1 } } as never);
+    level.launchers.push({ position: { x: 0, y: 0 }, size: { x: 0, y: 1 }, velocity: { x: 0, y: 5 } });
+    const issues = validateLevel(level);
+    expect(issues.map((i) => `${i.severity}:${i.path}`)).toEqual(['error:launchers[1].velocity', 'warning:launchers[2].size']);
+    expect(issues[0].effect).toBe('entry skipped');
+    expect(paths({ ...validLevel(), launchers: {} })).toEqual(['error:launchers']);
   });
 });
 

@@ -1111,3 +1111,368 @@ TEST_CASE("loadLevel forgets the checkpoint; restoreCheckpoint re-applies a save
         CHECK(sim.player().position.x == 0.0f);
     }
 }
+
+// --- Traversal verbs: one-way floors, moving platforms, launchers ------------------------------------------------
+
+namespace {
+
+Platform oneWay(Platform platform) {
+    platform.oneWay = true;
+    return platform;
+}
+
+Platform patrolling(Platform platform, Vec2 from, Vec2 to, float speed) {
+    platform.patrol = PlatformPatrol{from, to, speed};
+    return platform;
+}
+
+Launcher launcherAt(float x, float y, float w, float h, Vec2 velocity) { return Launcher{{x, y}, {w, h}, velocity}; }
+
+bool boxesOverlapForTest(const Simulation& sim, const Launcher& launcher) {
+    const PlayerBody& body = sim.player();
+    return std::abs(body.position.x - launcher.position.x) < (body.size.x + launcher.size.x) * 0.5f &&
+           std::abs(body.position.y - launcher.position.y) < (body.size.y + launcher.size.y) * 0.5f;
+}
+
+const SimEvent& first(const Events& events, SimEventType type) {
+    const auto it = std::find_if(events.begin(), events.end(), [type](const SimEvent& e) { return e.type == type; });
+    REQUIRE(it != events.end());
+    return *it;
+}
+
+// Highest feet position above the launch point, idle from the launch on (no jump key, so nothing can cut it).
+float apexAfterLaunch(float vy) {
+    LevelSpec level = floorLevel();
+    level.launchers = {launcherAt(2.0f, 0.3f, 1.0f, 0.4f, {0.0f, vy})};  // low, so falling back into it comes late
+    Simulation sim = load(level);
+    settle(sim);
+    walkUntil(sim, SimEventType::Launched);
+    REQUIRE(sim.player().velocity.y == vy);
+    const float start = feet(sim);
+    float best = start;
+    for (int i = 0; i < 600 && sim.player().velocity.y > -1.0f; ++i) {
+        tick(sim);
+        best = std::max(best, feet(sim));
+    }
+    return best - start;
+}
+
+// The same flight integrated by hand: after a launch, every tick applies gravity and then moves (no takeoff tick).
+float integratedApex(float vy) {
+    float y = 0.0f;
+    float best = 0.0f;
+    for (int i = 0; i < 600 && vy > -1.0f; ++i) {
+        vy += plainGravityStep(vy);
+        y += vy * DT;
+        best = std::max(best, y);
+    }
+    return best;
+}
+
+} // namespace
+
+TEST_CASE("platforms without the new fields stay solid and static") {
+    LevelSpec level = floorLevel();
+    level.platforms.push_back(box(0.0f, 1.0f, 4.0f, 0.2f));
+    level.platforms.push_back(patrolling(box(6.0f, 1.0f, 2.0f, 0.2f), {6.0f, 1.0f}, {9.0f, 1.0f}, 0.0f));  // speed 0
+    level.platforms.push_back(patrolling(box(12.0f, 1.0f, 2.0f, 0.2f), {12.0f, 1.0f}, {12.0f, 1.0f}, 2.0f));  // no path
+    Simulation sim = load(level);
+    CHECK(sim.movers().empty());
+    for (int i = 0; i < 120; ++i) tick(sim);
+    CHECK(sim.platforms()[2].position.x == 6.0f);
+    CHECK(sim.platforms()[3].position.x == 12.0f);
+
+    // A jump under the solid ledge stops at its underside.
+    settle(sim);
+    tick(sim, JUMP);
+    float highestHead = 0.0f;
+    for (int i = 0; i < 60; ++i) {
+        tick(sim, JUMP);
+        highestHead = std::max(highestHead, sim.player().position.y + sim.player().size.y * 0.5f);
+    }
+    CHECK(highestHead == doctest::Approx(0.9f));  // ledge bottom
+}
+
+TEST_CASE("a one-way floor lets a rising body through and catches it from above") {
+    // Floor top 0.1; a one-way ledge with its top at 1.1. Standing, the head is at 0.9, just under it. Volts' jump
+    // puts the feet at 1.23, above the top.
+    LevelSpec level = floorLevel();
+    level.platforms.push_back(oneWay(box(0.0f, 1.0f, 4.0f, 0.2f)));
+    Simulation sim = load(level);
+    sim.switchCharacter();
+    settle(sim);
+    const float ledgeTop = topOf(sim.platforms()[1]);
+
+    tick(sim, JUMP);
+    bool passedThrough = false;
+    int landings = 0;
+    for (int i = 0; i < 120; ++i) {
+        CAPTURE(i);
+        const Events events = tick(sim, JUMP);
+        landings += count(events, SimEventType::Landed);
+        // A solid ledge would hold the head at 0.9 (its underside).
+        if (sim.player().position.y + sim.player().size.y * 0.5f > 0.9f + 1e-3f) passedThrough = true;
+        if (sim.player().grounded) break;
+    }
+    CHECK(passedThrough);
+    REQUIRE(sim.player().grounded);
+    CHECK(landings == 1);
+    CHECK(sim.groundPlatform() == 1);
+    CHECK(feet(sim) == doctest::Approx(ledgeTop));
+
+    // It holds the player like any floor.
+    for (int i = 0; i < 120; ++i) {
+        tick(sim);
+        REQUIRE(sim.player().grounded);
+        REQUIRE(feet(sim) == doctest::Approx(ledgeTop));
+    }
+
+    SUBCASE("walking off its edge starts coyote time") {
+        for (int guard = 0; sim.player().grounded; ++guard) {
+            REQUIRE(guard < 240);
+            tick(sim, RIGHT);
+        }
+        CHECK(sim.coyoteTimer() > 0.0f);
+    }
+}
+
+TEST_CASE("a one-way has no sides: walking into one at body height does not stop the player") {
+    LevelSpec level = floorLevel();
+    level.platforms.push_back(oneWay(box(2.0f, 0.5f, 0.6f, 0.6f)));
+    Simulation sim = load(level);
+    settle(sim);
+    for (int i = 0; i < 120; ++i) {
+        tick(sim, RIGHT);
+        REQUIRE(sim.player().grounded);
+        REQUIRE(feet(sim) == doctest::Approx(0.1f));
+    }
+    CHECK(sim.player().position.x > 3.0f);
+}
+
+TEST_CASE("a horizontal mover carries a rider standing on it") {
+    // Mover 2 wide, top at 1.1, patrolling x in [0, 4] at 1 u/s. The player starts on it.
+    LevelSpec level = floorLevel({0.0f, 1.6f});
+    level.platforms.push_back(patrolling(box(0.0f, 1.0f, 2.0f, 0.2f), {0.0f, 1.0f}, {4.0f, 1.0f}, 1.0f));
+    Simulation sim = load(level);
+    REQUIRE(sim.movers().size() == 1);
+    settle(sim);
+    REQUIRE(sim.groundPlatform() == 1);
+
+    const Platform& mover = sim.platforms()[1];
+    const float startX = mover.position.x;
+    const float offset = sim.player().position.x - mover.position.x;
+    for (int i = 0; i < 60; ++i) {
+        CAPTURE(i);
+        const Events events = tick(sim);
+        REQUIRE(sim.player().grounded);
+        REQUIRE_FALSE(has(events, SimEventType::Landed));
+        REQUIRE(feet(sim) == doctest::Approx(topOf(mover)));
+    }
+    CHECK(mover.position.x - startX == doctest::Approx(1.0f).epsilon(1e-3));
+    CHECK(sim.player().position.x - mover.position.x == doctest::Approx(offset).epsilon(1e-4));
+    CHECK(sim.player().velocity.x == 0.0f);  // carried, not walking
+
+    // Through both turnarounds (and back), still on it at the same offset.
+    for (int i = 0; i < 480; ++i) {
+        tick(sim);
+        REQUIRE(sim.player().grounded);
+        REQUIRE(sim.platforms()[1].position.x >= 0.0f);
+        REQUIRE(sim.platforms()[1].position.x <= 4.0f);
+    }
+    CHECK(sim.player().position.x - mover.position.x == doctest::Approx(offset).epsilon(1e-3));
+}
+
+TEST_CASE("a vertical mover lifts a rider without a jump, and lowers them again") {
+    LevelSpec level = floorLevel({6.0f, 0.6f});
+    level.platforms.push_back(patrolling(box(6.0f, 0.3f, 2.0f, 0.2f), {6.0f, 0.3f}, {6.0f, 3.0f}, 1.5f));
+    Simulation sim = load(level);
+    settle(sim);
+    REQUIRE(sim.groundPlatform() == 1);
+
+    const Platform& lift = sim.platforms()[1];
+    float highest = feet(sim);
+    int jumps = 0;
+    int landings = 0;
+    // 2.7 units at 1.5 u/s is 1.8 s up and 1.8 s down.
+    for (int i = 0; i < 216; ++i) {
+        CAPTURE(i);
+        const Events events = tick(sim);
+        jumps += count(events, SimEventType::Jumped);
+        landings += count(events, SimEventType::Landed);
+        REQUIRE(sim.player().grounded);
+        REQUIRE(feet(sim) == doctest::Approx(topOf(lift)).epsilon(1e-4));
+        highest = std::max(highest, feet(sim));
+    }
+    CHECK(jumps == 0);
+    CHECK(landings == 0);
+    CHECK(highest == doctest::Approx(3.1f).epsilon(1e-3));  // carried to the top of the path
+    CHECK(feet(sim) < 0.5f);                                // and back down
+}
+
+TEST_CASE("a fast mover substeps: it cannot carry its rider through a thin floor") {
+    // 60 u/s is a whole unit per tick, four times the half-thickness step. The mover itself goes through the floor
+    // (movers follow their path); the rider is stopped on top of it.
+    LevelSpec level = floorLevel({0.0f, 3.6f});
+    level.platforms.push_back(patrolling(box(0.0f, 3.0f, 2.0f, 0.2f), {0.0f, 3.0f}, {0.0f, -6.0f}, 60.0f));
+    Simulation sim = load(level);
+    settle(sim);
+    REQUIRE(sim.groundPlatform() == 1);
+    for (int i = 0; i < 9; ++i) {
+        tick(sim);
+        REQUIRE(feet(sim) > 0.1f - 1e-3f);
+    }
+    REQUIRE(sim.platforms()[1].position.y == -6.0f);  // at the far end, well under the floor
+    CHECK(sim.player().grounded);
+    CHECK(sim.groundPlatform() == 0);
+    CHECK(feet(sim) == doctest::Approx(0.1f));
+}
+
+TEST_CASE("movers push the player they run into, but never crush them against a static platform") {
+    SUBCASE("descending onto a standing player: it passes through, the player stays on the floor") {
+        LevelSpec level = floorLevel();
+        level.platforms.push_back(patrolling(box(0.0f, 2.0f, 2.0f, 0.2f), {0.0f, 2.0f}, {0.0f, -1.0f}, 2.0f));
+        Simulation sim = load(level);
+        settle(sim);
+        // 3 units at 2 u/s: 90 ticks down.
+        for (int i = 0; i < 88; ++i) {
+            CAPTURE(i);
+            const Events events = tick(sim);
+            REQUIRE_FALSE(has(events, SimEventType::Respawned));
+            REQUIRE(sim.player().position.x == 0.0f);
+            REQUIRE(feet(sim) == doctest::Approx(0.1f).epsilon(1e-3));
+        }
+        CHECK(sim.platforms()[1].position.y < -0.5f);
+    }
+
+    SUBCASE("sideways into a standing player: pushed along, then left at the wall while it passes") {
+        LevelSpec level = floorLevel();
+        level.platforms.push_back(box(3.0f, 1.0f, 0.4f, 2.0f));  // wall, its left face at 2.8
+        level.platforms.push_back(patrolling(box(-3.0f, 0.4f, 0.6f, 0.6f), {-3.0f, 0.4f}, {5.0f, 0.4f}, 2.0f));
+        Simulation sim = load(level);
+        settle(sim);
+        const float wallStop = 2.8f - sim.player().size.x * 0.5f;
+        float furthest = 0.0f;
+        for (int i = 0; sim.platforms()[2].position.x < 5.0f; ++i) {  // until it is well past the wall
+            CAPTURE(i);
+            REQUIRE(i < 300);
+            const Events events = tick(sim);
+            REQUIRE_FALSE(has(events, SimEventType::Respawned));
+            REQUIRE(sim.player().position.x <= wallStop + 1e-4f);
+            REQUIRE(feet(sim) > 0.1f - 1e-3f);
+            furthest = std::max(furthest, sim.player().position.x);
+        }
+        CHECK(furthest == doctest::Approx(wallStop));
+        CHECK(sim.player().position.x == doctest::Approx(wallStop));
+    }
+
+    SUBCASE("a one-way lift rising under a player picks them up") {
+        LevelSpec level = floorLevel();
+        level.platforms.push_back(oneWay(patrolling(box(0.0f, -0.5f, 2.0f, 0.2f), {0.0f, -0.5f}, {0.0f, 2.0f}, 1.0f)));
+        Simulation sim = load(level);
+        settle(sim);
+        int landings = 0;
+        for (int i = 0; i < 120; ++i) {
+            landings += count(tick(sim), SimEventType::Landed);
+            REQUIRE(sim.player().grounded);  // from the floor straight onto the lift: never airborne
+        }
+        CHECK(landings == 0);
+        CHECK(sim.groundPlatform() == 1);
+        CHECK(feet(sim) == doctest::Approx(topOf(sim.platforms()[1])));
+        CHECK(feet(sim) > 1.0f);
+    }
+}
+
+TEST_CASE("a launcher sets the authored velocity on the tick of overlap and fires once per entry") {
+    LevelSpec level = floorLevel();
+    level.launchers = {launcherAt(2.0f, 0.5f, 1.0f, 0.8f, {0.5f, 8.0f})};
+    Simulation sim = load(level);
+    settle(sim);
+
+    const Events events = walkUntil(sim, SimEventType::Launched);
+    CHECK(count(events, SimEventType::Launched) == 1);
+    CHECK(first(events, SimEventType::Launched).index == 0);
+    CHECK_FALSE(has(events, SimEventType::Landed));
+    CHECK(sim.player().velocity.x == 0.5f);
+    CHECK(sim.player().velocity.y == 8.0f);
+    CHECK_FALSE(sim.player().grounded);
+    CHECK(sim.coyoteTimer() <= 0.0f);  // no jump out of a launch
+
+    // Still inside on the next tick: no second launch.
+    const Events next = tick(sim);
+    REQUIRE(boxesOverlapForTest(sim, sim.launchers()[0]));
+    CHECK_FALSE(has(next, SimEventType::Launched));
+
+    // Straight up and back down into it: it re-armed when the player left, so it fires again.
+    int launches = 0;
+    for (int i = 0; i < 240; ++i) launches += count(tick(sim), SimEventType::Launched);
+    CHECK(launches >= 1);
+}
+
+TEST_CASE("launch apex follows the same gravity as the jump-apex cases") {
+    CHECK(apexAfterLaunch(8.0f) == doctest::Approx(integratedApex(8.0f)).epsilon(1e-4));
+    // A jump at the same speed rises the same, plus its takeoff tick (which moves before gravity starts).
+    CHECK(apexAfterLaunch(CharacterStats::BOLTS_JUMP_STRENGTH) ==
+          doctest::Approx(0.909271f - CharacterStats::BOLTS_JUMP_STRENGTH * DT).epsilon(1e-4));
+}
+
+TEST_CASE("letting go of jump does not cut a launch") {
+    LevelSpec level = floorLevel();
+    level.launchers = {launcherAt(0.0f, 1.6f, 2.0f, 0.4f, {0.0f, 8.0f})};  // over the spawn, entered on the way up
+    Simulation sim = load(level);
+    settle(sim);
+    tick(sim, JUMP);
+    walkUntil(sim, SimEventType::Launched, JUMP, 60);
+    const float vy = sim.player().velocity.y;
+    REQUIRE(vy == 8.0f);
+    tick(sim, IDLE);  // the release edge
+    CHECK(sim.player().velocity.y == doctest::Approx(vy + plainGravityStep(vy)));
+}
+
+TEST_CASE("a launcher replaces a ground pound's velocity without ending the pound") {
+    LevelSpec level = floorLevel({0.0f, 5.0f});
+    level.launchers = {launcherAt(0.0f, 2.0f, 2.0f, 0.4f, {0.0f, 6.0f})};
+    Simulation sim = load(level);
+    tick(sim);
+    REQUIRE(has(tick(sim, ABILITY), SimEventType::PoundStarted));
+    const Events events = walkUntil(sim, SimEventType::Launched, IDLE, 60);
+    CHECK(sim.player().velocity.y == 6.0f);
+    CHECK(sim.player().velocity.x == 0.0f);
+    CHECK(sim.abilityState() == AbilityState::Active);
+    CHECK_FALSE(has(events, SimEventType::PoundImpact));
+}
+
+TEST_CASE("a launcher and a hazard in the same box: the launch fires, then the hazard still respawns") {
+    LevelSpec level = floorLevel();
+    level.launchers = {launcherAt(2.0f, 0.5f, 1.0f, 0.8f, {0.0f, 8.0f})};
+    level.hazards = {staticHazard(2.0f, 0.5f, 1.0f, 0.8f)};
+    Simulation sim = load(level);
+    settle(sim);
+    const Events events = walkUntil(sim, SimEventType::Launched);
+    REQUIRE(has(events, SimEventType::Respawned));
+    const auto order = [&events](SimEventType type) {
+        return std::find_if(events.begin(), events.end(), [type](const SimEvent& e) { return e.type == type; }) - events.begin();
+    };
+    CHECK(order(SimEventType::Launched) < order(SimEventType::Respawned));
+    CHECK(sim.player().position.x == 0.0f);
+    CHECK(sim.player().velocity.y == 0.0f);
+}
+
+TEST_CASE("a rider who also stands on a static platform is not dragged sideways by the mover") {
+    // The mover slides 0.5 into a static dock at the same height (the mover is index 0, so it is the platform the
+    // vertical resolve lands on). Standing over both, the player stays put while it pulls away; fully on it, they ride.
+    LevelSpec level;
+    level.spawn = Vec2{-0.2f, 0.6f};
+    level.platforms = {
+        patrolling(box(0.5f, 0.0f, 2.0f, 0.2f), {0.5f, 0.0f}, {5.0f, 0.0f}, 2.0f),
+        box(-2.0f, 0.0f, 4.0f, 0.2f),
+    };
+    Simulation sim = load(level);
+    settle(sim);
+    REQUIRE(sim.groundPlatform() == 0);
+    for (int i = 0; i < 60; ++i) {
+        tick(sim);
+        REQUIRE(sim.player().grounded);
+    }
+    CHECK(sim.player().position.x == -0.2f);
+    CHECK(sim.platforms()[0].position.x > 2.0f);
+}

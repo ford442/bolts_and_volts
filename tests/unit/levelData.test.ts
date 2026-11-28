@@ -87,6 +87,50 @@ describe('normalizeLevelData — courier entities', () => {
   });
 });
 
+describe('normalizeLevelData — one-way and moving platforms, launchers', () => {
+  it('passes oneWay and complete patrols through, and keeps platform indices', () => {
+    const { coreLevel, platformVisualFlags } = normalizeLevelData({
+      ...base,
+      platforms: [
+        { position: { x: 0, y: -3 }, size: { x: 10, y: 0.4 }, oneWay: false },
+        { position: { x: 2, y: -1 }, size: { x: 2, y: 0.2 }, oneWay: true, visual: false },
+        { position: { x: 4, y: -2 }, size: { x: 2, y: 0.2 }, patrol: { x0: 4, y0: -2, x1: 8, y1: 0, speed: 1.5 } },
+        { position: { x: 5, y: -2 }, size: { x: 2, y: 0.2 }, patrol: { x0: 5, y0: -2, x1: 8, y1: 0 } },
+        { position: { x: 6, y: -2 }, size: { x: 2, y: 0.2 }, oneWay: 'yes' },
+      ],
+    });
+    expect(coreLevel.platforms).toEqual([
+      { position: { x: 0, y: -3 }, size: { x: 10, y: 0.4 } },
+      { position: { x: 2, y: -1 }, size: { x: 2, y: 0.2 }, oneWay: true },
+      { position: { x: 4, y: -2 }, size: { x: 2, y: 0.2 }, patrol: { x0: 4, y0: -2, x1: 8, y1: 0, speed: 1.5 } },
+      { position: { x: 5, y: -2 }, size: { x: 2, y: 0.2 } }, // no speed: static
+      { position: { x: 6, y: -2 }, size: { x: 2, y: 0.2 } },
+    ]);
+    expect(platformVisualFlags).toEqual([true, false, true, true, true]);
+  });
+
+  it('passes launchers with a velocity and drops the rest', () => {
+    const { coreLevel } = normalizeLevelData({
+      ...base,
+      launchers: [
+        { position: { x: 1, y: 0 }, size: { x: 1, y: 0.4 }, velocity: { x: 0.5, y: 9 }, label: 'pad' },
+        { position: { x: 2, y: 0 }, size: { x: 1, y: 0.4 } },
+        { position: { x: 3, y: 0 }, size: { x: 1, y: 0.4 }, velocity: { x: 'a', y: 1 } },
+      ],
+    });
+    expect(coreLevel.launchers).toEqual([{ position: { x: 1, y: 0 }, size: { x: 1, y: 0.4 }, velocity: { x: 0.5, y: 9 } }]);
+    expect(normalizeLevelData(base).coreLevel).not.toHaveProperty('launchers');
+  });
+
+  it('loads courier-2 with a one-way hatch, a tram and a launch pad', () => {
+    const { coreLevel } = normalizeLevelData(JSON.parse(readFileSync('public/levels/courier-2.json', 'utf8')));
+    expect(coreLevel.platforms.filter((p) => p.oneWay)).toHaveLength(2);
+    expect(coreLevel.platforms.filter((p) => p.patrol)).toHaveLength(1);
+    expect(coreLevel.launchers).toHaveLength(1);
+    expect(coreLevel).not.toHaveProperty('payload');
+  });
+});
+
 describe('DEFAULT_PLATFORMS', () => {
   it("matches Game.cpp's defaultLevel(), which a new Game collides with until the first loadLevel", () => {
     // The snapshot no longer carries platforms, so before any level loads the renderer draws this list.

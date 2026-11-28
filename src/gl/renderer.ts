@@ -16,6 +16,8 @@ import {
 
 /** Opacity applied to the player and particles while level-authoring mode is on. */
 const AUTHORING_DIM_ALPHA = 0.3;
+/** One-way platforms use the platform texture, see-through, so they read as "you can jump up through this". */
+const ONE_WAY_PLATFORM_ALPHA = 0.6;
 
 /**
  * Sprite tint: an RGB multiplier applied after the texture sample, with `desaturate` (0..1) first fading the sample
@@ -195,6 +197,7 @@ export class Renderer {
     payload: TextureObject;
     terminal: TextureObject;
     terminalUsed: TextureObject;
+    launcher: TextureObject;
   };
   // World-space view and the sprite projection, rebuilt on resize (never per sprite).
   private view = { worldWidth: VIEW_WORLD_WIDTH, worldHeight: VIEW_WORLD_WIDTH };
@@ -258,6 +261,7 @@ export class Renderer {
       payload: this.createSolidTexture([215, 155, 70, 255]),
       terminal: this.createSolidTexture([70, 235, 120, 230]),
       terminalUsed: this.createSolidTexture([60, 120, 90, 140]),
+      launcher: this.createSolidTexture([255, 205, 40, 210]),
     };
     this.authoringTextures = {
       gridMinor: this.createSolidTexture([255, 255, 255, 70]),
@@ -699,7 +703,7 @@ export class Renderer {
     cameraPosition: Vec2,
     playerPosition: Vec2,
     playerSize: Vec2,
-    platforms: Platform[],
+    platforms: (Platform & { oneWay?: boolean })[],
     particles: ParticleView[],
     playerTexture: TextureObject | null,
     platformTexture: TextureObject | null,
@@ -711,7 +715,8 @@ export class Renderer {
     playerTint: Tint = NO_TINT,
     authoring: AuthoringOverlay | null = null,
     cullDebug: boolean = false,
-    entities: SceneEntities = NO_ENTITIES
+    entities: SceneEntities = NO_ENTITIES,
+    launchers: Platform[] = [],
   ) {
     const stats = (this.cullStats = emptyCullStats());
     this.drawStats = { drawCalls: 0, instances: 0 };
@@ -745,9 +750,11 @@ export class Renderer {
       const frameCoord = { x: 0, y: 0 };
       for (let i = 0; i < platforms.length; i++) {
         if (platformVisualFlags[i] === false || !platformVisible[i]) continue;
-        const { position, size } = platforms[i];
+        const { position, size, oneWay } = platforms[i];
         const y = this.anchoredY(platformTexture, position.y, size.y, frameCoord, frameSize, 0);
-        batch.push(platformTexture, this.spriteAt(position.x, y, size.x, size.y, platformTexture));
+        const s = this.spriteAt(position.x, y, size.x, size.y, platformTexture);
+        if (oneWay === true) s.alpha = ONE_WAY_PLATFORM_ALPHA;
+        batch.push(platformTexture, s);
       }
     }
 
@@ -760,13 +767,14 @@ export class Renderer {
       if (this.pushBox(goal.position, goal.size, this.debugCyanTexture, 1, cullRect)) stats.goals.drawn++;
     }
 
-    // Terminals and hazards: triggers, drawn like goals (over platforms, under the player). Disabled hazards and
-    // used terminals stay visible but faded, so the player can see what the terminal did.
+    // Launchers, terminals and hazards: triggers, drawn like goals (over platforms, under the player). Disabled
+    // hazards and used terminals stay visible but faded, so the player can see what the terminal did.
     const entityTextures = this.entityTextures;
-    stats.entities.total = entities.hazards.length + entities.payloads.length + entities.terminals.length;
-    const drawEntity = (box: FlagBox, texture: TextureObject, alpha: number) => {
+    stats.entities.total = entities.hazards.length + entities.payloads.length + entities.terminals.length + launchers.length;
+    const drawEntity = (box: Platform, texture: TextureObject, alpha: number) => {
       if (this.pushBox(box.position, box.size, texture, alpha, cullRect)) stats.entities.drawn++;
     };
+    for (const launcher of launchers) drawEntity(launcher, entityTextures.launcher, 1);
     for (const terminal of entities.terminals) drawEntity(terminal, terminal.flag ? entityTextures.terminalUsed : entityTextures.terminal, 1);
     for (const hazard of entities.hazards) drawEntity(hazard, hazard.flag ? entityTextures.hazard : entityTextures.hazardOff, 1);
 

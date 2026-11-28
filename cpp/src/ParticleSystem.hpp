@@ -80,6 +80,7 @@ public:
 
         switch (event.type) {
             case SimEventType::Jumped:
+            case SimEventType::Launched:
                 for (int i = 0; i < 10; ++i) {
                     const float angle = rng.unit() * PI;
                     const float speed = 1.0f + rng.unit() * 2.0f;

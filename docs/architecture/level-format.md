@@ -12,7 +12,7 @@ Verified against the loaders as of this writing:
 
 1. `GameCanvas` fetches `/levels/manifest.json`, then `/levels/<file>` for the selected entry.
 2. `normalizeLevelData` validates the JSON and splits it in two:
-   - **Core level** (`name`, `description`, `spawn`, `bounds`, `camera`, `platforms`, `goals`, `checkpoints`, `hazards`, `payload`, `terminals`) is passed to C++ via `Game::loadLevel`. Only these whitelisted keys reach WASM, as plain numbers (C++ never parses JSON).
+   - **Core level** (`name`, `description`, `spawn`, `bounds`, `camera`, `platforms` (with `oneWay` / `patrol`), `goals`, `checkpoints`, `hazards`, `payload`, `terminals`, `launchers`) is passed to C++ via `Game::loadLevel`. Only these whitelisted keys reach WASM, as plain numbers (C++ never parses JSON).
    - **TS-only data** (`backgroundLayers`, `decor`, per-platform `visual`, `author`) stays in the renderer/UI layer. C++ never sees it.
 3. Parsing is **lenient**: malformed entries are skipped or defaulted rather than rejected, so a broken level still boots.
 4. `validateLevel` (`src/lib/levelValidator.ts`) walks the same JSON and reports everything the loader dropped or defaulted. Each message has the form
@@ -23,7 +23,7 @@ Verified against the loaders as of this writing:
 
 - World units, not pixels. The viewport is 10 world units wide (height follows aspect ratio).
 - **+Y is up**, +X is right. There is no fixed origin; `(0, 0)` is just a convention. Existing levels put the spawn ground near `y = -3`.
-- `position` for platforms, goals, hazards, the payload, terminals and decor is the **center** of the rectangle; `size` is full width/height.
+- `position` for platforms, goals, hazards, the payload, terminals, launchers and decor is the **center** of the rectangle; `size` is full width/height.
 - Texture/`uv` rectangles are in **source-image pixels**.
 
 ## Top-level fields
@@ -42,6 +42,7 @@ Verified against the loaders as of this writing:
 | `hazards` | no | array | C++ + renderer | Touching one respawns the player. Optional patrol. |
 | `payload` | no | object | C++ + renderer | One pickup. When present, goals only complete while it is carried. |
 | `terminals` | no | array | C++ + renderer | Volts + `E` disables a hazard. |
+| `launchers` | no | array | C++ + renderer | Entering one sets the player's velocity. |
 | `backgroundLayers` | no | array | renderer | Parallax and/or world-space painted layers. Default: single `./background.png` parallax layer. |
 | `decor` | no | array | renderer | Default: none. |
 
@@ -52,10 +53,43 @@ Verified against the loaders as of this writing:
 | `position` | yes | `{x, y}` | Center. Entry is skipped if missing or non-finite. |
 | `size` | yes | `{x, y}` | Width, height. |
 | `visual` | no | boolean | `false` = collision only (no sprite drawn). Default `true`. |
+| `oneWay` | no | boolean | `true` = only the top face is solid (see below). Default `false`, a solid box. |
+| `patrol` | no | `{x0, y0, x1, y1, speed}` | Makes it a moving platform (see below). All five must be finite numbers or the platform is static. |
 | `label` | no | string | Free-form author note; ignored by all loaders (`test-1.json` uses it). |
 
 Invisible collision example: `{ "position": {"x": 8.0, "y": -2.9}, "size": {"x": 0.8, "y": 0.8}, "visual": false }`.
 Visual flags are index-aligned with *valid* platforms (invalid entries are dropped before indexing, so skipped entries don't misalign them).
+
+Platforms are resolved in index order (among the valid entries) when the player overlaps more than one, and that includes moving ones: a mover is tested every tick at its current position, in its index slot.
+
+#### One-way platforms (`"oneWay": true`)
+
+Only the **top face** is solid, and only for a player whose feet were at or above that top before the move and who is not rising (`velocity.y <= 0`). A jump from below passes up through it; if the jump does not clear the top, the player falls back down through it too. It has no sides (walking into one at body height does nothing) and no underside. Landed on, it is an ordinary floor: grounded, coyote time when walking off, `Landed` on the tick of contact. There is no drop-through. Drawn with the platform texture at 60% opacity.
+
+#### Moving platforms (`patrol`)
+
+`patrol: { x0, y0, x1, y1, speed }` moves the platform's centre back and forth between `(x0, y0)` and `(x1, y1)` at a constant `speed` in units/s, turning at each end. The path may be horizontal, vertical or diagonal. It starts at the point of the path nearest its `position` (so put `position` on the path). A negative `speed` uses its absolute value; `speed: 0` or a path with no length leaves it static. It can also be `oneWay`. It is solid like any platform and ignores other platforms (it follows its path through them, which is how a tram can slide into a dock).
+
+- **Riding:** a player standing on it moves with it, in the same tick, so they are never inside it or a tick behind. A rider whose feet also rest on a static platform (a dock the mover slid into) is carried up and down but not dragged sideways. Jumping off keeps only the player's own velocity.
+- **Walls and ceilings:** a rider carried into a static platform stops at its surface; the mover carries on. Nothing is crushed: a solid mover that ends a move still overlapping the player (it pushed them into a wall, or squeezed them against the floor) lets them through until they no longer overlap.
+- **Pushing:** a solid mover that runs into a player who is not riding it pushes them out along its motion (rising: onto its top). A one-way mover only picks up a player whose feet were at or above its top.
+- Fast movers are substepped by the same rule as long falls, so neither the rider nor the mover can skip across a thin platform.
+- State lasts until the next level load: a respawn does not reset a mover's position. Drawn with the platform texture at its current position.
+
+### `launchers[]`
+
+| Field | Required | Type | Notes |
+|---|---|---|---|
+| `position` | yes | `{x, y}` | Center. |
+| `size` | yes | `{x, y}` | Width, height. |
+| `velocity` | yes | `{x, y}` | Units/s. A missing or non-finite `velocity` skips the entry. |
+| `label` | no | string | Author note; ignored. |
+
+A trigger, not a solid (overlap rule as hazards: touching edges do not count). The first tick the player overlaps it, the player's velocity is **replaced** by `velocity`, both axes, and the sim emits one `Launched` (with the launcher's index; it plays the `jump` sound). It re-arms once the player has left. Both characters. A launch leaves the ground like a jump, without the jump cut (letting go of a held jump key does not shorten it) and without coyote time.
+
+The replacement is total: a launch during a ground pound swaps the pound's downward speed for `velocity` and does **not** end the pound (it stays active until it lands or times out); during a hover it keeps the hover's low gravity. Horizontal speed above the character's run speed is clamped as soon as a direction is held, so steer-heavy launches should be mostly vertical. A pad sitting on a floor fires instead of a landing.
+
+Launchers are checked after collision (so a pad fires from a resolved position) and before hazards: a launcher and a hazard in the same box launch, then the hazard still respawns the player. A respawn onto a launcher does not fire it until the player has left and come back. For height: a launch of `vy` rises about `vy² / 49` units (so 19 u/s clears ~7.3), the same gravity as a jump minus its takeoff tick. Drawn as an amber quad.
 
 ### `goals[]`
 
@@ -116,7 +150,20 @@ Example (from `public/levels/courier-1.json`):
 ]
 ```
 
-The validator reports: unknown keys (with typo suggestions), bad vectors, a non-object `patrol` or non-numeric patrol fields, swapped endpoints, negative or zero patrol speed, a patrolling `position.x` outside its range, a terminal target that is missing, not an integer, out of range, or shifted by a skipped hazard, and a payload with no goals to deliver to.
+The validator reports: unknown keys (with typo suggestions), bad vectors, a non-object `patrol` or non-numeric patrol fields, swapped endpoints, negative or zero patrol speed, a patrolling `position.x` outside its range, a terminal target that is missing, not an integer, out of range, or shifted by a skipped hazard, and a payload with no goals to deliver to. For platforms and launchers: a non-boolean `oneWay`, a non-object platform `patrol` or a missing / non-numeric one of its five fields (the platform stays static), negative or zero speed, a path with no length, a `position` off the path, and a launcher with no area or a missing / bad `velocity` (skipped).
+
+Example (from `public/levels/courier-2.json`):
+
+```json
+"platforms": [
+  { "position": { "x": 3.5, "y": -1.6 }, "size": { "x": 3.0, "y": 0.2 }, "oneWay": true, "label": "hatch" },
+  { "position": { "x": 8.0, "y": -1.6 }, "size": { "x": 2.0, "y": 0.2 },
+    "patrol": { "x0": 7.5, "y0": -1.6, "x1": 16.5, "y1": -1.6, "speed": 2.0 }, "label": "tram" }
+],
+"launchers": [
+  { "position": { "x": 22.0, "y": -1.3 }, "size": { "x": 1.0, "y": 0.4 }, "velocity": { "x": 0.0, "y": 19.0 } }
+]
+```
 
 ### `camera`
 
@@ -214,7 +261,7 @@ If the manifest is missing/invalid, the game falls back to a single built-in `te
 
 ### The route: `next`
 
-Only the level-complete screen follows `next` (`resolveNextLevel` in `src/game/session.ts`). The dropdown and `1`-`9` still jump to any level. When the entry has no `next`, or it names an id the manifest does not have, the screen shows no Next button and one line saying the route ends; it **never wraps** to the first level. An unknown id is also a `console.warn` when the level is completed. The shipped manifest chains `test-1 → demo-decor → demo-pano → courier-1` (the end); a test keeps it free of dangling ids and loops.
+Only the level-complete screen follows `next` (`resolveNextLevel` in `src/game/session.ts`). The dropdown and `1`-`9` still jump to any level. When the entry has no `next`, or it names an id the manifest does not have, the screen shows no Next button and one line saying the route ends; it **never wraps** to the first level. An unknown id is also a `console.warn` when the level is completed. The shipped manifest chains `test-1 → demo-decor → demo-pano → courier-1 → courier-2` (the end); a test keeps it free of dangling ids and loops.
 
 ### Progress (`localStorage`)
 
@@ -280,7 +327,7 @@ Condensed from `public/levels/demo-decor.json` (see that file for the full level
 }
 ```
 
-`public/levels/courier-1.json` is the reference for hazards, a payload and a terminal.
+`public/levels/courier-1.json` is the reference for hazards, a payload and a terminal; `public/levels/courier-2.json` for one-way platforms, a moving platform and a launcher.
 
 `public/levels/test-1.json` is the reference for a pure-collision level: it uses only `name`, `description`, `spawn`, `bounds`, `platforms` (with `label`) and `goals`.
 

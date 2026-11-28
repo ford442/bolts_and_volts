@@ -1,12 +1,36 @@
 #ifndef TYPES_HPP
 #define TYPES_HPP
 
+#include <optional>
 #include <string>
 #include <vector>
 
 struct Vec2 { float x; float y; };
 
-struct Platform { Vec2 position; Vec2 size; };
+// Back and forth between `from` and `to` (any direction, diagonals included) at a constant `speed` in units/s.
+struct PlatformPatrol {
+    Vec2 from;
+    Vec2 to;
+    float speed;
+};
+
+// A solid box. Goals and checkpoints reuse it as a plain trigger box and ignore `oneWay` and `patrol`.
+// `oneWay`: only the top face is solid, and only for a body that was at or above it and is not rising.
+// `patrol`: a moving platform; Simulation::loadLevel keeps it static unless the path and speed are usable.
+struct Platform {
+    Vec2 position;
+    Vec2 size;
+    bool oneWay = false;
+    std::optional<PlatformPatrol> patrol = std::nullopt;
+};
+
+// Trigger (strict overlap, never solid). Entering one replaces the player's velocity with `velocity`; it re-arms once
+// the player has left.
+struct Launcher {
+    Vec2 position;
+    Vec2 size;
+    Vec2 velocity;
+};
 
 // Overlap respawns the player at the respawn point (the level spawn, or the latest checkpoint). With speed > 0 it patrols x in [x0, x1] at a constant speed
 // (`direction` is +1 or -1); speed 0 is a static hazard (x0 == x1 == position.x). Disabled by a terminal.
@@ -69,8 +93,9 @@ struct AnimationState {
 };
 
 // Float layout of the per-frame snapshot written by Game::captureFrame(). Mirrored in
-// src/game/snapshot.ts (FRAME) — change both together. Only what moves or changes state is in it: platforms and
-// goals are static for the life of a loadLevel, so the TypeScript side keeps the arrays it passed in.
+// src/game/snapshot.ts (FRAME) — change both together. Only what moves or changes state is in it: platforms, goals
+// and launchers are static for the life of a loadLevel, so the TypeScript side keeps the arrays it passed in; a
+// moving platform's current centre comes in the movers block, keyed by its platform index.
 namespace FrameLayout {
     constexpr int PLAYER_X = 0;
     constexpr int PLAYER_Y = 1;
@@ -89,9 +114,11 @@ namespace FrameLayout {
     constexpr int HAZARD_COUNT = 15;
     constexpr int PAYLOAD_COUNT = 16;  // 0 or 1
     constexpr int TERMINAL_COUNT = 17;
-    constexpr int HEADER_SIZE = 20;    // slots 12-13 and 18-19 reserved
-    // Body order: hazards, payload, terminals (ENTITY_STRIDE), particles.
+    constexpr int MOVER_COUNT = 18;    // moving platforms
+    constexpr int HEADER_SIZE = 20;    // slots 12-13 and 19 reserved
+    // Body order: hazards, payload, terminals (ENTITY_STRIDE), movers (MOVER_STRIDE), particles.
     constexpr int ENTITY_STRIDE = 5;   // x, y, w, h, flag (hazard enabled / payload carried / terminal used)
+    constexpr int MOVER_STRIDE = 3;    // platform index (into the level's platforms), x, y (current centre)
     constexpr int PARTICLE_STRIDE = 4; // x, y, size, life / maxLife
 }
 
