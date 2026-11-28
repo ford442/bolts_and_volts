@@ -1,9 +1,10 @@
 import type { BackgroundLayer, DecorLayers, Renderer, SceneEntities, TextureObject } from '../gl/renderer';
 import type { AuthoringOverlay } from '../lib/authoring';
 import type { Game, GameModule, Platform } from '../wasm/loader';
+import type { CorePlatform } from '../lib/levelData';
 import type { KeyboardInput } from './input';
 import { characterPresentation } from './characters';
-import { createFrameState, readFrame, viewFrame, type FrameState } from './snapshot';
+import { createFrameState, readFrame, viewFrame, type FrameState, type MoverView } from './snapshot';
 
 /** Simulation tick. `Game::update` always advances by exactly this much, so physics never depends on frame pacing. */
 export const FIXED_STEP = 1 / 60;
@@ -39,13 +40,29 @@ export type SceneAssets = {
   backgroundLayers: BackgroundLayer[];
   decorLayers: DecorLayers;
   /**
-   * The level's static geometry, exactly as passed to `Game::loadLevel` (the snapshot does not carry it). Replace
-   * these together with every `loadLevel`, or they stop matching what the simulation collides with.
+   * The level's geometry, exactly as passed to `Game::loadLevel` (the snapshot does not carry it). Replace these
+   * together with every `loadLevel`, or they stop matching what the simulation collides with. The loop overwrites
+   * the `position` of each moving platform every frame with the one in the snapshot (`applyMovers`).
    */
-  platforms: Platform[];
+  platforms: CorePlatform[];
   /** Index-aligned with `platforms`. */
   platformVisualFlags: boolean[];
   goals: Platform[];
+  /** Triggers, static like goals. */
+  launchers: Platform[];
+};
+
+/**
+ * Move each moving platform in `platforms` to where the snapshot says it is (in place, no allocation). An index past
+ * the end is ignored: the frame belongs to a level whose geometry has not been handed over yet.
+ */
+export const applyMovers = (movers: readonly MoverView[], platforms: Platform[]): void => {
+  for (const mover of movers) {
+    const platform = platforms[mover.index];
+    if (!platform) continue;
+    platform.position.x = mover.position.x;
+    platform.position.y = mover.position.y;
+  }
 };
 
 /** What the loop needs from the renderer (narrow, so tests can pass a fake). */
@@ -118,6 +135,7 @@ export const startGameLoop = (options: GameLoopOptions): (() => void) => {
     const length = game.captureFrame();
     // Re-read HEAPF32 every frame: memory growth replaces it and detaches the old buffer.
     readFrame(viewFrame(module.HEAPF32, game.framePtr(), length), frame);
+    applyMovers(frame.movers, assets.platforms);
 
     const cullDebug = options.cullDebug?.() ?? false;
     renderer.drawScene(
@@ -137,6 +155,7 @@ export const startGameLoop = (options: GameLoopOptions): (() => void) => {
       options.overlay?.(frame) ?? null,
       cullDebug,
       entities,
+      assets.launchers,
     );
     options.afterDraw?.(frame);
     schedule();

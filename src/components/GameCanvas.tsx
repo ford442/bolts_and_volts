@@ -266,9 +266,11 @@ const GameCanvas = () => {
           platformTexture,
           backgroundLayers: [],
           decorLayers: EMPTY_DECOR_LAYERS,
-          platforms: [...DEFAULT_PLATFORMS],
+          // Own copies: the loop writes mover positions into these objects (the default level has none, but still).
+          platforms: DEFAULT_PLATFORMS.map((p) => ({ position: { ...p.position }, size: { ...p.size } })),
           platformVisualFlags: [],
           goals: [],
+          launchers: [],
         };
         const { loadBackgroundLayers, loadDecorLayers } = createLevelAssetLoader(renderer, () => `[level ${currentLevelIdRef.current}]`);
         const setLevelAssets = (backgroundLayers: BackgroundLayer[], decorLayers: DecorLayers) => {
@@ -337,6 +339,7 @@ const GameCanvas = () => {
               assets.platforms = coreLevel.platforms;
               assets.platformVisualFlags = normalized.platformVisualFlags;
               assets.goals = coreLevel.goals ?? [];
+              assets.launchers = coreLevel.launchers ?? [];
               setLevelAssets(
                 await loadBackgroundLayers(normalized.backgroundLayers),
                 await loadDecorLayers(normalized.decor),

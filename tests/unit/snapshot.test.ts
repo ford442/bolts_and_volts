@@ -6,6 +6,7 @@ const pack = (opts: {
   hazards?: number[][];
   payloads?: number[][];
   terminals?: number[][];
+  movers?: number[][];
   particles?: number[][];
   header?: Partial<Record<keyof typeof FRAME, number>>;
 }): Float32Array => {
@@ -13,14 +14,16 @@ const pack = (opts: {
   const hazards = opts.hazards ?? [];
   const payloads = opts.payloads ?? [];
   const terminals = opts.terminals ?? [];
+  const movers = opts.movers ?? [];
   const header = new Array(FRAME.HEADER_SIZE).fill(0);
   for (const [key, value] of Object.entries(opts.header ?? {})) header[FRAME[key as keyof typeof FRAME]] = value;
   header[FRAME.PARTICLE_COUNT] = particles.length;
   header[FRAME.HAZARD_COUNT] = hazards.length;
   header[FRAME.PAYLOAD_COUNT] = payloads.length;
   header[FRAME.TERMINAL_COUNT] = terminals.length;
+  header[FRAME.MOVER_COUNT] = movers.length;
   return new Float32Array([
-    ...header, ...hazards.flat(), ...payloads.flat(), ...terminals.flat(), ...particles.flat(),
+    ...header, ...hazards.flat(), ...payloads.flat(), ...terminals.flat(), ...movers.flat(), ...particles.flat(),
   ]);
 };
 
@@ -47,6 +50,22 @@ describe('readFrame', () => {
     expect(frame.payloads).toEqual([{ position: { x: 2, y: -0.25 }, size: { x: 0.5, y: 0.5 }, flag: true }]);
     expect(frame.terminals).toEqual([{ position: { x: 12, y: 1 }, size: { x: 0.5, y: 0.75 }, flag: false }]);
     expect(frame.particles).toEqual([{ position: { x: 1, y: 2 }, size: 0.125, lifeRatio: 0.5 }]);
+  });
+
+  it('decodes movers after the terminals and before the particles', () => {
+    const frame = readFrame(pack({
+      terminals: [[12, 1, 0.5, 0.75, 0]],
+      movers: [[2, 8.5, -1.5], [7, 0, 3.25]],
+      particles: [[1, 2, 0.125, 0.5]],
+    }), createFrameState());
+    expect(frame.movers).toEqual([{ index: 2, position: { x: 8.5, y: -1.5 } }, { index: 7, position: { x: 0, y: 3.25 } }]);
+    expect(frame.particles).toEqual([{ position: { x: 1, y: 2 }, size: 0.125, lifeRatio: 0.5 }]);
+    const out = createFrameState();
+    readFrame(pack({ movers: [[0, 1, 1]] }), out);
+    readFrame(pack({}), out);
+    expect(out.movers).toEqual([]);
+    const withMover = pack({ movers: [[0, 1, 1]] });
+    expect(() => readFrame(withMover.subarray(0, withMover.length - 1), createFrameState())).toThrow(/truncated/);
   });
 
   it('reuses objects across frames and shrinks lists', () => {

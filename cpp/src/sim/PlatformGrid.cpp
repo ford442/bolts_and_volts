@@ -31,7 +31,7 @@ Extent extentOf(const Platform& platform) {
 
 } // namespace
 
-void PlatformGrid::build(const std::vector<Platform>& platforms) {
+void PlatformGrid::build(const std::vector<Platform>& platforms, const std::vector<bool>& skip) {
     originX_ = originY_ = 0.0f;
     cellSize_ = CELL_SIZE;
     columns_ = rows_ = 0;
@@ -43,10 +43,11 @@ void PlatformGrid::build(const std::vector<Platform>& platforms) {
     extents.reserve(platforms.size());
     bool any = false;
     Extent bounds{0.0f, 0.0f, 0.0f, 0.0f};
-    for (const Platform& platform : platforms) {
-        const Extent e = extentOf(platform);
+    const auto skipped = [&skip](std::size_t i) { return i < skip.size() && skip[i]; };
+    for (std::size_t i = 0; i < platforms.size(); ++i) {
+        const Extent e = extentOf(platforms[i]);
         extents.push_back(e);
-        if (!isFinite(e)) continue;
+        if (skipped(i) || !isFinite(e)) continue;
         if (!any) {
             bounds = e;
             any = true;
@@ -80,6 +81,7 @@ void PlatformGrid::build(const std::vector<Platform>& platforms) {
     std::vector<bool> inGrid(platforms.size(), false);
     cellStart_.assign(cellCount + 1, 0);
     for (std::size_t i = 0; i < platforms.size(); ++i) {
+        if (skipped(i)) continue;
         const Extent& e = extents[i];
         CellRange& r = ranges[i];
         const bool placed = isFinite(e) && cellRange(e.minX, e.minY, e.maxX, e.maxY, r) &&

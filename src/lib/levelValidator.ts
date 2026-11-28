@@ -30,9 +30,11 @@ const isFiniteNumber = (value: unknown): value is number => typeof value === 'nu
 
 const TOP_LEVEL_KEYS = [
   'name', 'description', 'author', 'spawn', 'bounds', 'camera', 'platforms', 'goals', 'checkpoints',
-  'hazards', 'payload', 'terminals', 'backgroundLayers', 'decor',
+  'hazards', 'payload', 'terminals', 'launchers', 'backgroundLayers', 'decor',
 ];
-const PLATFORM_KEYS = ['position', 'size', 'visual', 'label'];
+const PLATFORM_KEYS = ['position', 'size', 'visual', 'oneWay', 'patrol', 'label'];
+const PLATFORM_PATROL_KEYS = ['x0', 'y0', 'x1', 'y1', 'speed'];
+const LAUNCHER_KEYS = ['position', 'size', 'velocity', 'label'];
 const GOAL_KEYS = ['position', 'size', 'label'];
 const CHECKPOINT_KEYS = ['position', 'size', 'label'];
 const CAMERA_KEYS = ['followY', 'verticalDeadzone', 'lookAheadY'];
@@ -243,13 +245,48 @@ export const validateLevel = (level: unknown): LevelIssue[] => {
         return;
       }
       checkUnknownKeys(path, item, PLATFORM_KEYS);
-      checkVec2(`${path}.position`, item.position, 'error', 'entry skipped');
+      const position = checkVec2(`${path}.position`, item.position, 'error', 'entry skipped');
       const size = checkVec2(`${path}.size`, item.size, 'error', 'entry skipped');
       if (size && (size.x <= 0 || size.y <= 0)) {
         add('warning', `${path}.size`, 'width and height > 0', `(${size.x}, ${size.y})`, 'platform has no collidable area');
       }
       if (item.visual !== undefined && typeof item.visual !== 'boolean') {
         add('warning', `${path}.visual`, 'boolean', item.visual, 'ignored, platform is drawn');
+      }
+      if (item.oneWay !== undefined && typeof item.oneWay !== 'boolean') {
+        add('warning', `${path}.oneWay`, 'boolean', item.oneWay, 'ignored, platform is solid on every side');
+      }
+      if (item.patrol === undefined) return;
+      const patrolPath = `${path}.patrol`;
+      if (!isRecord(item.patrol)) {
+        add('warning', patrolPath, '{ "x0", "y0", "x1", "y1", "speed": number }', item.patrol, 'ignored, platform is static');
+        return;
+      }
+      const patrol = item.patrol;
+      checkUnknownKeys(patrolPath, patrol, PLATFORM_PATROL_KEYS);
+      let patrolOk = true;
+      for (const key of PLATFORM_PATROL_KEYS) {
+        if (!isFiniteNumber(patrol[key])) {
+          add('warning', `${patrolPath}.${key}`, 'finite number', patrol[key], 'patrol ignored, platform is static');
+          patrolOk = false;
+        }
+      }
+      if (!patrolOk) return;
+      const [x0, y0, x1, y1, speed] = PLATFORM_PATROL_KEYS.map((key) => patrol[key] as number);
+      if (speed < 0) add('warning', `${patrolPath}.speed`, 'number >= 0', `number ${speed}`, 'using its absolute value');
+      if (speed === 0) add('warning', `${patrolPath}.speed`, 'number > 0 for a patrol', 'number 0', 'platform is static');
+      const dx = x1 - x0;
+      const dy = y1 - y0;
+      const lengthSq = dx * dx + dy * dy;
+      if (lengthSq === 0) {
+        add('warning', patrolPath, '(x0, y0) and (x1, y1) apart', `both (${x0}, ${y0})`, 'path has no length, platform is static');
+      } else if (speed !== 0 && position) {
+        // The simulation starts a mover at the point of its path nearest the authored centre.
+        const t = Math.min(1, Math.max(0, ((position.x - x0) * dx + (position.y - y0) * dy) / lengthSq));
+        const nearest = { x: x0 + dx * t, y: y0 + dy * t };
+        if (Math.hypot(position.x - nearest.x, position.y - nearest.y) > 1e-3) {
+          add('warning', `${path}.position`, 'a point on the patrol path', `(${position.x}, ${position.y})`, `starts at the nearest point of its path, (${nearest.x}, ${nearest.y})`);
+        }
       }
     });
   }
@@ -398,6 +435,28 @@ export const validateLevel = (level: unknown): LevelIssue[] => {
           const arrayIndex = keptHazardIndex.indexOf(target);
           add('warning', `${path}.disablesHazard`, 'an index that ignores no dropped hazards', `number ${target}`, `targets hazards[${arrayIndex}] because invalid hazards before it are skipped`);
         }
+      });
+    }
+  }
+
+  // --- launchers (optional) ---
+  if (level.launchers !== undefined) {
+    if (!Array.isArray(level.launchers)) {
+      add('error', 'launchers', 'array of { position, size, velocity }', level.launchers, 'launchers ignored');
+    } else {
+      level.launchers.forEach((item: unknown, index: number) => {
+        const path = `launchers[${index}]`;
+        if (!isRecord(item)) {
+          add('error', path, 'object { position, size, velocity }', item, 'entry skipped');
+          return;
+        }
+        checkUnknownKeys(path, item, LAUNCHER_KEYS);
+        checkVec2(`${path}.position`, item.position, 'error', 'entry skipped');
+        const size = checkVec2(`${path}.size`, item.size, 'error', 'entry skipped');
+        if (size && (size.x <= 0 || size.y <= 0)) {
+          add('warning', `${path}.size`, 'width and height > 0', `(${size.x}, ${size.y})`, 'launcher has no area to touch');
+        }
+        checkVec2(`${path}.velocity`, item.velocity, 'error', 'entry skipped');
       });
     }
   }

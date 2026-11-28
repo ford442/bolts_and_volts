@@ -43,14 +43,23 @@ export type DecorConfig = {
 };
 
 export type HazardPatrol = { x0: number; x1: number; speed: number };
+/** A moving platform's path: back and forth between (x0, y0) and (x1, y1) at `speed` units/s. */
+export type PlatformPatrol = { x0: number; y0: number; x1: number; y1: number; speed: number };
+/**
+ * A platform as C++ reads it. `oneWay` is only ever `true` when present (a solid box otherwise); `patrol` only when all
+ * five numbers are finite. C++ still keeps a zero-length or zero-speed patrol static.
+ */
+export type CorePlatform = Platform & { oneWay?: true; patrol?: PlatformPatrol };
+/** Trigger box; entering it replaces the player's velocity with `velocity`. */
+export type CoreLauncher = Platform & { velocity: Vec2 };
 export type CoreHazard = Platform & { patrol?: HazardPatrol };
 /** `disablesHazard` indexes the level's *valid* hazards (dropped entries do not count). */
 export type CoreTerminal = Platform & { disablesHazard: number };
 
 /**
  * The subset of a level JSON that `Game::loadLevel` reads. `decor`, `backgroundLayers` and the per-platform
- * `visual` flag are TS-only and never cross into C++. Hazards, payload and terminals cross as plain numbers too:
- * C++ never parses JSON.
+ * `visual` flag are TS-only and never cross into C++. Hazards, payload, terminals, launchers and the platforms'
+ * `oneWay` / `patrol` cross as plain numbers too: C++ never parses JSON.
  */
 export type CoreLevel = {
   name?: string;
@@ -58,7 +67,7 @@ export type CoreLevel = {
   spawn?: Vec2;
   bounds?: { min: Vec2; max: Vec2 };
   camera?: { followY?: boolean; verticalDeadzone?: number; lookAheadY?: number };
-  platforms: Platform[];
+  platforms: CorePlatform[];
   goals?: Platform[];
   /** Triggers (same centre-and-size boxes as goals): entering one makes its centre the respawn point. */
   checkpoints?: Platform[];
@@ -66,6 +75,7 @@ export type CoreLevel = {
   /** Present: the goals only complete while it is carried. */
   payload?: Platform;
   terminals?: CoreTerminal[];
+  launchers?: CoreLauncher[];
 };
 
 export type LevelData = {
@@ -132,6 +142,27 @@ const parseHazards = (value: unknown): CoreHazard[] => {
     const patrol = parsePatrol((item as JsonRecord).patrol);
     if (patrol) hazard.patrol = patrol;
     parsed.push(hazard);
+  }
+  return parsed;
+};
+
+const parsePlatformPatrol = (value: unknown): PlatformPatrol | null => {
+  if (!isRecord(value)) return null;
+  const { x0, y0, x1, y1, speed } = value;
+  if (!isFiniteNumber(x0) || !isFiniteNumber(y0) || !isFiniteNumber(x1) || !isFiniteNumber(y1) || !isFiniteNumber(speed)) return null;
+  return { x0, y0, x1, y1, speed };
+};
+
+/** Launchers need a box and a finite `velocity`; anything less is dropped. */
+const parseLaunchers = (value: unknown): CoreLauncher[] => {
+  if (!Array.isArray(value)) return [];
+  const parsed: CoreLauncher[] = [];
+  for (const item of value) {
+    const box = parseBox(item);
+    if (!box) continue;
+    const velocity = parseVec2((item as JsonRecord).velocity);
+    if (!velocity) continue;
+    parsed.push({ ...box, velocity });
   }
   return parsed;
 };
@@ -306,14 +337,18 @@ export const normalizeLevelData = (level: unknown): LevelData => {
   }
 
   const sourcePlatforms = Array.isArray(level.platforms) ? level.platforms : [];
-  const parsedPlatforms: Platform[] = [];
+  const parsedPlatforms: CorePlatform[] = [];
   const platformVisualFlags: boolean[] = [];
   for (const item of sourcePlatforms) {
     if (!isRecord(item)) continue;
     const position = parseVec2(item.position);
     const size = parseVec2(item.size);
     if (!position || !size) continue;
-    parsedPlatforms.push({ position, size });
+    const platform: CorePlatform = { position, size };
+    if (item.oneWay === true) platform.oneWay = true;
+    const patrol = parsePlatformPatrol(item.patrol);
+    if (patrol) platform.patrol = patrol;
+    parsedPlatforms.push(platform);
     platformVisualFlags.push(isBoolean(item.visual) ? item.visual : true);
   }
   const platforms = parsedPlatforms.length > 0 ? parsedPlatforms : fallbackPlatforms;
@@ -329,6 +364,8 @@ export const normalizeLevelData = (level: unknown): LevelData => {
   if (payload) coreLevel.payload = payload;
   const terminals = parseTerminals(level.terminals);
   if (terminals.length > 0) coreLevel.terminals = terminals;
+  const launchers = parseLaunchers(level.launchers);
+  if (launchers.length > 0) coreLevel.launchers = launchers;
 
   return {
     coreLevel,

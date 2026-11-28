@@ -1,5 +1,6 @@
 #include "Game.hpp"
 #include <algorithm>
+#include <cmath>
 
 using emscripten::val;
 
@@ -32,6 +33,48 @@ void readBoxes(const val& list, std::vector<Platform>& out) {
 bool readBox(const val& entry, Vec2& position, Vec2& size) {
     return hasField(entry, "position") && hasField(entry, "size") &&
         readVec2(entry["position"], position) && readVec2(entry["size"], size);
+}
+
+bool readFiniteNumber(const val& object, const char* key, float& out) {
+    if (!hasField(object, key) || !object[key].isNumber()) return false;
+    out = object[key].as<float>();
+    return std::isfinite(out);
+}
+
+// `[{ position, size, oneWay?, patrol?: { x0, y0, x1, y1, speed } }, ...]`. Entries missing either vector are skipped
+// (like readBoxes, so indices match the TypeScript side). Without all five finite patrol numbers the platform is static.
+void readPlatforms(const val& list, std::vector<Platform>& out) {
+    if (list.isNull() || list.isUndefined()) return;
+    const unsigned length = list["length"].as<unsigned>();
+    for (unsigned i = 0; i < length; ++i) {
+        const val entry = list[i];
+        Platform platform{};
+        if (!readBox(entry, platform.position, platform.size)) continue;
+        platform.oneWay = hasField(entry, "oneWay") && entry["oneWay"].isTrue();
+        if (hasField(entry, "patrol")) {
+            const val patrol = entry["patrol"];
+            PlatformPatrol parsed{};
+            if (readFiniteNumber(patrol, "x0", parsed.from.x) && readFiniteNumber(patrol, "y0", parsed.from.y) &&
+                readFiniteNumber(patrol, "x1", parsed.to.x) && readFiniteNumber(patrol, "y1", parsed.to.y) &&
+                readFiniteNumber(patrol, "speed", parsed.speed)) {
+                platform.patrol = parsed;
+            }
+        }
+        out.push_back(platform);
+    }
+}
+
+// `[{ position, size, velocity: {x, y} }, ...]`; entries missing any of the three are skipped.
+void readLaunchers(const val& list, std::vector<Launcher>& out) {
+    if (list.isNull() || list.isUndefined()) return;
+    const unsigned length = list["length"].as<unsigned>();
+    for (unsigned i = 0; i < length; ++i) {
+        const val entry = list[i];
+        Launcher launcher{};
+        if (!readBox(entry, launcher.position, launcher.size)) continue;
+        if (!hasField(entry, "velocity") || !readVec2(entry["velocity"], launcher.velocity)) continue;
+        out.push_back(launcher);
+    }
 }
 
 // `[{ position, size, patrol?: { x0, x1, speed } }, ...]`. Without a complete patrol the hazard is static. Entries
@@ -130,11 +173,12 @@ void Game::loadLevel(const val& level) {
     LevelSpec spec;
     Vec2 spawn{};
     if (hasField(level, "spawn") && readVec2(level["spawn"], spawn)) spec.spawn = spawn;
-    if (hasField(level, "platforms")) readBoxes(level["platforms"], spec.platforms);
+    if (hasField(level, "platforms")) readPlatforms(level["platforms"], spec.platforms);
     if (hasField(level, "goals")) readBoxes(level["goals"], spec.goals);
     if (hasField(level, "checkpoints")) readBoxes(level["checkpoints"], spec.checkpoints);
     if (hasField(level, "hazards")) readHazards(level["hazards"], spec.hazards);
     if (hasField(level, "terminals")) readTerminals(level["terminals"], spec.terminals);
+    if (hasField(level, "launchers")) readLaunchers(level["launchers"], spec.launchers);
     if (hasField(level, "payload")) {
         Payload payload{};
         if (readBox(level["payload"], payload.position, payload.size)) spec.payload = payload;
@@ -194,7 +238,8 @@ void Game::dispatchEvents() {
         const SimEvent event = pendingEvents[i];
         particleSystem.onEvent(event, playerSize);
         switch (event.type) {
-            case SimEventType::Jumped: playSound("jump"); break;
+            case SimEventType::Jumped:
+            case SimEventType::Launched: playSound("jump"); break;
             case SimEventType::Landed: playSound("land"); break;
             case SimEventType::PoundStarted: playSound("ground_pound"); break;
             case SimEventType::HoverStarted: playSound("hover"); break;
@@ -232,12 +277,15 @@ int Game::captureFrame() {
     const std::vector<Hazard>& hazards = sim.hazards();
     const std::optional<Payload>& payload = sim.payload();
     const std::vector<Terminal>& terminals = sim.terminals();
+    const std::vector<Mover>& movers = sim.movers();
+    const std::vector<Platform>& platforms = sim.platforms();
     const std::vector<Particle>& particles = particleSystem.getParticles();
     const PlayerBody& player = sim.player();
     const AnimationState& animation = sim.animation();
     const size_t payloadCount = payload ? 1 : 0;
     const size_t length = HEADER_SIZE
         + (hazards.size() + payloadCount + terminals.size()) * ENTITY_STRIDE
+        + movers.size() * MOVER_STRIDE
         + particles.size() * PARTICLE_STRIDE;
     frameBuffer.resize(length);
     float* out = frameBuffer.data();
@@ -259,9 +307,11 @@ int Game::captureFrame() {
     out[HAZARD_COUNT] = static_cast<float>(hazards.size());
     out[PAYLOAD_COUNT] = static_cast<float>(payloadCount);
     out[TERMINAL_COUNT] = static_cast<float>(terminals.size());
+    out[MOVER_COUNT] = static_cast<float>(movers.size());
 
     // Platforms and goals are not in the snapshot: they cannot change after loadLevel, and the renderer draws the
-    // arrays src/game/loop.ts kept from the level it passed in.
+    // arrays src/game/loop.ts kept from the level it passed in. Movers are the exception: their current centre is in
+    // the movers block, keyed by platform index, and the loop writes it into that array.
     float* cursor = out + HEADER_SIZE;
     const auto writeEntity = [&cursor](const Vec2& position, const Vec2& size, bool flag) {
         cursor[0] = position.x;
@@ -274,6 +324,13 @@ int Game::captureFrame() {
     for (const Hazard& h : hazards) writeEntity(h.position, h.size, h.enabled);
     if (payload) writeEntity(payload->position, payload->size, payload->carried);
     for (const Terminal& t : terminals) writeEntity(t.position, t.size, t.used);
+    for (const Mover& m : movers) {
+        const Vec2& position = platforms[static_cast<size_t>(m.platform)].position;
+        cursor[0] = static_cast<float>(m.platform);
+        cursor[1] = position.x;
+        cursor[2] = position.y;
+        cursor += MOVER_STRIDE;
+    }
     for (const Particle& p : particles) {
         cursor[0] = p.position.x;
         cursor[1] = p.position.y;

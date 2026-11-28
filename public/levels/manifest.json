@@ -27,8 +27,16 @@
     {
       "id": "courier-1",
       "file": "courier-1.json",
+      "next": "courier-2",
       "name": "Courier Run - Special Delivery",
       "description": "Carry the package past a patrolling cat and a laser gate only Volts can open.",
+      "author": "Core Team"
+    },
+    {
+      "id": "courier-2",
+      "file": "courier-2.json",
+      "name": "Courier Run - Service Route",
+      "description": "Jump up through a hatch, ride a tram over the live rail, and launch up to the drop-off.",
       "author": "Core Team"
     }
   ]
